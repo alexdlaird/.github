@@ -33,16 +33,12 @@ body:
   attributes:
     label: SDK Version
     placeholder: Python 3.9.2
-  validations:
-    required: true
 
 - type: input
   id: library-version
   attributes:
     label: Library Version
     placeholder: pyngrok 1.0.3
-  validations:
-    required: true
 
 - type: textarea
   id: describe-the-bug
