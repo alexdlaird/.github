@@ -2,7 +2,7 @@
 A clear and concise description of what was changed.
 
 **Issues**
-A list of GitHub issues related to this PR.
+Fixes # (issue number)
 
 **Type of Change**
 - [ ] Bug fix (non-breaking change which fixes an issue)
