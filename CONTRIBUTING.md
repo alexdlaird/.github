@@ -5,12 +5,12 @@ If you find issues, report them on GitHub.
 If you would like to contribute to the code, the process is pretty simple:
 
 1. Familiarise yourself with the code.
-2.
-Fork [the repository on GitHub](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/working-with-forks/fork-a-repo)
+2. Fork [the repository on GitHub](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/working-with-forks/fork-a-repo)
 and start implementing changes.
 3. Write a test that plainly validates the changes made.
-4. Build and test locally with `make test` and `make local` (if a library).
-5. Submit
+4. Test locally with ``make test``
+5. If a library, ensure no build or linting errors were introduced by running ``make local`` and ``make check``
+6. Submit
    a [pull requests](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/creating-a-pull-request-from-a-fork)
    to get the changes merged.
 
