@@ -1,0 +1,1 @@
+Hello 👋, and welcome! Here you will find the source code for my personal projects. If you're looking for code relating to Helium Student Planner, header over to [HeliumEdu](https://github.com/HeliumEdu/heliumcli).
