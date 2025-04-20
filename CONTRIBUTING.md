@@ -14,7 +14,7 @@ and start implementing changes.
    a [pull requests](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/creating-a-pull-request-from-a-fork)
    to get the changes merged.
 
-Also be sure to review the [Code of Conduct](https://github.com/alexdlaird/.github/blob/main/CODE_OF_CONDUCT.md) before
+Also be sure to review the [Code of Conduct](https://github.com/alexdlaird/.github?tab=coc-ov-file#contributor-covenant-code-of-conduct) before
 submitting issues or pull requests.
 
 Want to contribute financially? If you've found this project
