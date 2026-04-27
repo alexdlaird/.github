@@ -67,6 +67,14 @@ runs:
           exit 1
         fi
 
+        # Fail if changelog contains breaking changes but bump type is not major
+        if echo "$CONTENT" | grep -q '^### Breaking'; then
+          if [ "$BUMP_TYPE" != "major" ]; then
+            echo "::error::Changelog contains a '### Breaking' section, but bump type is '${BUMP_TYPE}'. Use 'major' for breaking changes."
+            exit 1
+          fi
+        fi
+
         # --- Parse previous version ---
         OLD_VERSION=$(echo "$PREV_VERSION_LINE" | sed -n 's/^## \[\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)\].*/\1/p')
         if [ -z "$OLD_VERSION" ]; then
