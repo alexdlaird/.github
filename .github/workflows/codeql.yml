@@ -1,0 +1,30 @@
+name: "CodeQL"
+
+on:
+  workflow_call:
+
+permissions:
+  security-events: write
+  contents: read
+  actions: read
+  issues: none
+  pull-requests: none
+
+jobs:
+  analyse:
+    name: Analyse
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v4
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v4
