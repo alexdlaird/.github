@@ -19,21 +19,11 @@ on:
         description: "owner/repo"
         required: true
         type: string
-      validate_command:
-        description: "Per-repo validation hook (Makefile target). Runs after squash, before push."
-        required: false
-        type: string
-        default: 'make validate-release VERSION=${VERSION}'
       additional_bump_command:
         description: "Optional shell command run after the primary version_file bump. OLD_VERSION and NEW_VERSION are exposed as env vars. Use for repos that need to bump multiple files (e.g. install-doc pinned versions)."
         required: false
         type: string
         default: ''
-      ci_timeout_minutes:
-        description: "Max minutes to wait for develop CI to finish before aborting"
-        required: false
-        type: number
-        default: 20
     secrets:
       bot_app_id:
         required: true
@@ -46,9 +36,6 @@ on:
       squash_commit_sha:
         description: "SHA of new squash commit on main"
         value: ${{ jobs.prereq.outputs.squash_commit_sha }}
-      squash_boundary:
-        description: "develop SHA squashed (input for cleanup)"
-        value: ${{ jobs.prereq.outputs.squash_boundary }}
       release_notes:
         description: "CHANGELOG body for the new version"
         value: ${{ jobs.prereq.outputs.release_notes }}
@@ -67,7 +54,6 @@ jobs:
     outputs:
       version: ${{ steps.compute.outputs.new-version }}
       squash_commit_sha: ${{ steps.push.outputs.sha }}
-      squash_boundary: ${{ steps.boundary.outputs.sha }}
       release_notes: ${{ steps.compute.outputs.release-notes }}
 
     steps:
@@ -161,16 +147,14 @@ jobs:
       - name: Run repo validation
         env:
           VERSION: ${{ steps.compute.outputs.new-version }}
-          VALIDATE_COMMAND: ${{ inputs.validate_command }}
-        run: |
-          eval "${VALIDATE_COMMAND}"
+        run: make validate-release VERSION="${VERSION}"
 
       - name: Wait for build.yml on develop HEAD to succeed
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           DEVELOP_SHA: ${{ steps.boundary.outputs.sha }}
           REPO_SLUG: ${{ inputs.repo_slug }}
-          CI_TIMEOUT_MINUTES: ${{ inputs.ci_timeout_minutes }}
+          CI_TIMEOUT_MINUTES: 20
         run: |
           set -euo pipefail
           DEADLINE=$(( $(date +%s) + CI_TIMEOUT_MINUTES * 60 ))
