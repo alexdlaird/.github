@@ -331,3 +331,15 @@ jobs:
 
           echo "Created signed commit ${SHA} on main"
           echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Add release to job summary
+        env:
+          NEW_VERSION: ${{ steps.compute.outputs.new-version }}
+          SHA: ${{ steps.push.outputs.sha }}
+          REPO_SLUG: ${{ inputs.repo_slug }}
+        run: |
+          {
+            echo "## Release \`${NEW_VERSION}\`"
+            echo ""
+            echo "Squash commit: [\`${SHA:0:7}\`](https://github.com/${REPO_SLUG}/commit/${SHA})"
+          } >> "$GITHUB_STEP_SUMMARY"
