@@ -24,6 +24,11 @@ on:
         required: false
         type: string
         default: 'make validate-release VERSION=${VERSION}'
+      additional_bump_command:
+        description: "Optional shell command run after the primary version_file bump. OLD_VERSION and NEW_VERSION are exposed as env vars. Use for repos that need to bump multiple files (e.g. install-doc pinned versions)."
+        required: false
+        type: string
+        default: ''
       ci_timeout_minutes:
         description: "Max minutes to wait for develop CI to finish before aborting"
         required: false
@@ -143,6 +148,15 @@ jobs:
           sed -i "${PATTERN}" "${VERSION_FILE}"
           grep -F "${VERSION}" "${VERSION_FILE}" >/dev/null \
             || { echo "::error::Version bump failed in ${VERSION_FILE}"; exit 1; }
+
+      - name: Run additional bump command
+        if: inputs.additional_bump_command != ''
+        env:
+          OLD_VERSION: ${{ steps.compute.outputs.old-version }}
+          NEW_VERSION: ${{ steps.compute.outputs.new-version }}
+          ADDITIONAL_BUMP_COMMAND: ${{ inputs.additional_bump_command }}
+        run: |
+          eval "${ADDITIONAL_BUMP_COMMAND}"
 
       - name: Run repo validation
         env:
