@@ -99,11 +99,11 @@ jobs:
       - name: Fetch develop
         run: git fetch origin develop
 
-      - name: Record squash boundary (develop HEAD before mutation)
+      - name: Record squash boundary
         id: boundary
         run: echo "sha=$(git rev-parse origin/develop)" >> "$GITHUB_OUTPUT"
 
-      - name: Pre-validate (develop ahead of main)
+      - name: Pre-validate develop ahead of main
         run: |
           AHEAD=$(git rev-list --count main..origin/develop)
           if [ "$AHEAD" -eq 0 ]; then
@@ -112,7 +112,7 @@ jobs:
           fi
           echo "develop is $AHEAD commits ahead of main"
 
-      - name: Squash develop into main (working tree only, not yet committed)
+      - name: Squash develop into main
         run: git merge --squash origin/develop
 
       - name: Compute version + rewrite CHANGELOG
@@ -122,7 +122,7 @@ jobs:
           bump-type: ${{ inputs.bump_type }}
           repo-slug: ${{ inputs.repo_slug }}
 
-      - name: Pre-validate (tag does not already exist)
+      - name: Pre-validate tag does not already exist
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           NEW_VERSION: ${{ steps.compute.outputs.new-version }}
@@ -144,14 +144,14 @@ jobs:
           grep -F "${VERSION}" "${VERSION_FILE}" >/dev/null \
             || { echo "::error::Version bump failed in ${VERSION_FILE}"; exit 1; }
 
-      - name: Run repo validation (post-bump; Makefile owns SECURITY.md and version-file checks)
+      - name: Run repo validation
         env:
           VERSION: ${{ steps.compute.outputs.new-version }}
           VALIDATE_COMMAND: ${{ inputs.validate_command }}
         run: |
           eval "${VALIDATE_COMMAND}"
 
-      - name: Wait for CI to finish on develop HEAD (success-only, with timeout)
+      - name: Wait for CI to finish on develop HEAD
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           DEVELOP_SHA: ${{ steps.boundary.outputs.sha }}
@@ -164,6 +164,8 @@ jobs:
 
           while [ "$(date +%s)" -lt "$DEADLINE" ]; do
             RUNS=$(gh api "repos/${REPO_SLUG}/commits/${DEVELOP_SHA}/check-runs" --paginate --jq '.check_runs')
+            RUNS=$(echo "$RUNS" | jq --arg rid "$GITHUB_RUN_ID" \
+              '[.[] | select(.details_url | contains("/runs/" + $rid + "/") | not)]')
             RUN_COUNT=$(echo "$RUNS" | jq 'length')
             NON_SUCCESS=$(echo "$RUNS" | jq '[.[] | select(.status == "completed" and .conclusion != "success")]')
             NON_SUCCESS_COUNT=$(echo "$NON_SUCCESS" | jq 'length')
