@@ -38,19 +38,19 @@ runs:
           exit 1
         fi
 
-        UNRELEASED_LINE=$(grep -n '^## \[Unreleased\]' CHANGELOG.md | head -1)
+        UNRELEASED_LINE=$(grep -nm 1 '^## \[Unreleased\]' CHANGELOG.md || true)
         if [ -z "$UNRELEASED_LINE" ]; then
           echo "::error::No '## [Unreleased]' section found in CHANGELOG.md"
           exit 1
         fi
         UNRELEASED_LINENO=$(echo "$UNRELEASED_LINE" | cut -d: -f1)
 
-        PREV_VERSION_LINE=$(awk "NR > $UNRELEASED_LINENO && /^## \[[0-9]/" CHANGELOG.md | head -1)
+        PREV_VERSION_LINE=$(awk -v n="$UNRELEASED_LINENO" 'NR > n && /^## \[[0-9]/ {print; exit}' CHANGELOG.md)
         if [ -z "$PREV_VERSION_LINE" ]; then
           echo "::error::No previous version entry found in CHANGELOG.md"
           exit 1
         fi
-        PREV_VERSION_LINENO=$(grep -nF "$PREV_VERSION_LINE" CHANGELOG.md | head -1 | cut -d: -f1)
+        PREV_VERSION_LINENO=$(grep -nFm 1 "$PREV_VERSION_LINE" CHANGELOG.md | cut -d: -f1)
 
         # Extract content between Unreleased header and previous version header
         CONTENT=$(sed -n "$((UNRELEASED_LINENO + 1)),$((PREV_VERSION_LINENO - 1))p" CHANGELOG.md)
