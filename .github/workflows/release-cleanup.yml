@@ -69,7 +69,25 @@ jobs:
             exit 0
           fi
 
-          # Conflict path: open a PR so the conflicts can be resolved in GitHub's web UI.
+          # CHANGELOG.md always conflicts after a release: main moves entries from
+          # [Unreleased] to a new version section while develop still has them under
+          # [Unreleased]. main's CHANGELOG is authoritative post-release, so resolve
+          # it automatically rather than leaving it to error-prone manual resolution.
+          if git diff --name-only --diff-filter=U | grep -qx 'CHANGELOG.md'; then
+            git checkout --theirs CHANGELOG.md
+            git add CHANGELOG.md
+            echo "Auto-resolved CHANGELOG.md conflict (took main's version)"
+          fi
+
+          # If CHANGELOG.md was the only conflict, commit and push directly.
+          if [ -z "$(git diff --name-only --diff-filter=U)" ]; then
+            git commit -m "Merge main into develop"
+            git push origin develop
+            echo "Merged main into develop ($(git rev-parse --short HEAD))"
+            exit 0
+          fi
+
+          # Other files still conflict — open a PR for manual resolution.
           git merge --abort || true
 
           MAIN_SHA=$(git rev-parse origin/main)
