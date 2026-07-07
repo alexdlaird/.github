@@ -63,31 +63,22 @@ jobs:
             exit 0
           fi
 
+          # Register a local merge driver that always takes main's version of
+          # CHANGELOG.md. Without this, git's ort strategy auto-merges it
+          # "successfully" but incorrectly: develop still has [Unreleased] entries
+          # (unchanged from the merge base), and main moved them to a new versioned
+          # section, so ort keeps both — silently producing duplicates. This driver
+          # runs before the merge and bypasses auto-merge entirely for that file.
+          echo "CHANGELOG.md merge=take-theirs" >> .git/info/attributes
+          git config merge.take-theirs.driver 'cp -f "%B" "%A"'
+
           if git merge --no-ff -m "Merge main into develop" origin/main; then
             git push origin develop
             echo "Merged main into develop ($(git rev-parse --short HEAD))"
             exit 0
           fi
 
-          # CHANGELOG.md always conflicts after a release: main moves entries from
-          # [Unreleased] to a new version section while develop still has them under
-          # [Unreleased]. main's CHANGELOG is authoritative post-release, so resolve
-          # it automatically rather than leaving it to error-prone manual resolution.
-          if git diff --name-only --diff-filter=U | grep -qx 'CHANGELOG.md'; then
-            git checkout --theirs CHANGELOG.md
-            git add CHANGELOG.md
-            echo "Auto-resolved CHANGELOG.md conflict (took main's version)"
-          fi
-
-          # If CHANGELOG.md was the only conflict, commit and push directly.
-          if [ -z "$(git diff --name-only --diff-filter=U)" ]; then
-            git commit -m "Merge main into develop"
-            git push origin develop
-            echo "Merged main into develop ($(git rev-parse --short HEAD))"
-            exit 0
-          fi
-
-          # Other files still conflict — open a PR for manual resolution.
+          # Remaining conflict path (non-CHANGELOG files) — open a PR.
           git merge --abort || true
 
           MAIN_SHA=$(git rev-parse origin/main)
