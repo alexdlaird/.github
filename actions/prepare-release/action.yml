@@ -1,5 +1,5 @@
 name: 'Prepare Release'
-description: 'Parse CHANGELOG.md, compute the next version, rewrite the changelog, and extract release notes.'
+description: 'Parse CHANGELOG.md, compute the next version, rewrite the changelog (and SECURITY.md), and extract release notes.'
 
 inputs:
   bump-type:
@@ -56,9 +56,14 @@ runs:
         CONTENT=$(sed -n "$((UNRELEASED_LINENO + 1)),$((PREV_VERSION_LINENO - 1))p" CHANGELOG.md)
         TRIMMED=$(echo "$CONTENT" | sed '/^[[:space:]]*$/d')
 
+        # A patch may go out with nothing listed (its notes say so); a minor or major release must say what's in it.
         if [ -z "$TRIMMED" ]; then
-          echo "::error::No content found under [Unreleased] section. Add changelog entries before releasing."
-          exit 1
+          if [ "$BUMP_TYPE" != "patch" ]; then
+            echo "::error::No content found under [Unreleased] section. A ${BUMP_TYPE} release needs changelog entries; add them before releasing."
+            exit 1
+          fi
+          echo "No changelog entries under [Unreleased]; releasing the patch as stability and bug fixes"
+          CONTENT=$(printf '\n### Fixed\n\n- Stability and bug fixes.')
         fi
 
         # Fail if content looks like it already has a version/date header (old workflow pattern)
@@ -121,6 +126,23 @@ runs:
           tail -n "+${PREV_VERSION_LINENO}" CHANGELOG.md
         } > CHANGELOG.md.tmp
         mv CHANGELOG.md.tmp CHANGELOG.md
+
+        # --- Rewrite SECURITY.md's supported versions (when it has a table, and it doesn't list this minor yet) ---
+        NEW_MINOR="${NEW_VERSION%.*}"
+        if [ -f SECURITY.md ] && grep -q '^|[-[:space:]|]*$' SECURITY.md && ! grep -q "^| ${NEW_MINOR}\.x " SECURITY.md; then
+          awk -v supported="${NEW_MINOR}.x" -v older="< ${NEW_MINOR}" '
+            table == 1 && /^\|/ { next }
+            table == 1 { table = 2 }
+            { print }
+            table == 0 && /^\|[-[:space:]|]*$/ {
+              printf "| %-7s | %-18s |\n", supported, ":white_check_mark:"
+              printf "| %-7s | %-18s |\n", older, ":x:"
+              table = 1
+            }
+          ' SECURITY.md > SECURITY.md.tmp
+          mv SECURITY.md.tmp SECURITY.md
+          echo "SECURITY.md now supports ${NEW_MINOR}.x"
+        fi
 
         # --- Extract release notes (trim leading/trailing blank lines) ---
         RELEASE_NOTES=$(echo "$CONTENT" | awk 'NF{found=1} found' | tac | awk 'NF{found=1} found' | tac)
