@@ -127,9 +127,9 @@ runs:
         } > CHANGELOG.md.tmp
         mv CHANGELOG.md.tmp CHANGELOG.md
 
-        # --- Rewrite SECURITY.md's supported versions (when it has a table, and it doesn't list this minor yet) ---
+        # --- Rewrite SECURITY.md's supported versions (when its table lists them by X.Y.x, and not this minor yet) ---
         NEW_MINOR="${NEW_VERSION%.*}"
-        if [ -f SECURITY.md ] && grep -q '^|[-[:space:]|]*$' SECURITY.md && ! grep -q "^| ${NEW_MINOR}\.x " SECURITY.md; then
+        if [ -f SECURITY.md ] && grep -qE '^\| *[0-9]+\.[0-9]+\.x ' SECURITY.md && ! grep -q "^| ${NEW_MINOR}\.x " SECURITY.md; then
           awk -v supported="${NEW_MINOR}.x" -v older="< ${NEW_MINOR}" '
             table == 1 && /^\|/ { next }
             table == 1 { table = 2 }
