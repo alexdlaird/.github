@@ -81,18 +81,19 @@ jobs:
 
     steps:
       # GitHub's Linux runner starts with about 14 GB free, and R8 on the release bundle runs out: toolchains this job
-      # never uses go (the Android SDK and NDK it builds with stay).
+      # never uses go (the Android SDK and NDK it builds with stay, and Node, which an app's build may use).
       - name: Free disk space
         if: runner.os == 'Linux' && runner.environment == 'github-hosted'
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift \
-            /usr/local/share/boost /usr/local/lib/node_modules /opt/microsoft
+            /usr/local/share/boost /opt/microsoft
           df -h /
 
       - uses: actions/checkout@v6
 
       # Values only this app's build and upload read (NAME=value per line), kept as secrets and set for the rest of
-      # the job.
+      # the job. GitHub masks the secret as a whole, not each value, so each is masked before every later step's
+      # environment listing would print it.
       - name: Export build secrets
         env:
           BUILD_SECRETS: ${{ secrets.build_secrets }}
@@ -103,6 +104,7 @@ jobs:
               echo "::error::build_secrets has a line that isn't NAME=value"
               exit 1
             fi
+            echo "::add-mask::${LINE#*=}"
             echo "$LINE" >> "$GITHUB_ENV"
           done <<< "$BUILD_SECRETS"
 

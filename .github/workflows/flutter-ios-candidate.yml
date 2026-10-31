@@ -140,7 +140,8 @@ jobs:
       - uses: actions/checkout@v6
 
       # Values only this app's build and upload read (NAME=value per line), kept as secrets and set for the rest of
-      # the job.
+      # the job. GitHub masks the secret as a whole, not each value, so each is masked before every later step's
+      # environment listing would print it.
       - name: Export build secrets
         env:
           BUILD_SECRETS: ${{ secrets.build_secrets }}
@@ -151,6 +152,7 @@ jobs:
               echo "::error::build_secrets has a line that isn't NAME=value"
               exit 1
             fi
+            echo "::add-mask::${LINE#*=}"
             echo "$LINE" >> "$GITHUB_ENV"
           done <<< "$BUILD_SECRETS"
 
