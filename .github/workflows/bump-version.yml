@@ -1,0 +1,148 @@
+name: Bump Version (Set the next release on develop)
+
+on:
+  workflow_call:
+    inputs:
+      bump_type:
+        description: "next | patch | minor | major, counted from the last release tag (next: patch, or minor for two-part versions). Never lowers develop's version."
+        required: true
+        type: string
+      version_file:
+        description: "Path to the file containing the version"
+        required: true
+        type: string
+      version_pattern:
+        description: 'sed expression that writes the version; ${VERSION} is substituted before invocation'
+        required: true
+        type: string
+      version_parts:
+        description: "3 for X.Y.Z; 2 for X.Y (the file holds X.Y.0)"
+        required: false
+        type: number
+        default: 3
+      repo_slug:
+        description: "owner/repo"
+        required: true
+        type: string
+      additional_bump_files:
+        description: "Newline-separated list of files where pinned references '==OLD_VERSION' should be rewritten to '==NEW_VERSION'."
+        required: false
+        type: string
+        default: ''
+    secrets:
+      bot_app_id:
+        required: true
+      bot_private_key:
+        required: true
+    outputs:
+      version:
+        description: "develop's version after the bump"
+        value: ${{ jobs.bump.outputs.version }}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bump-version-${{ github.repository }}
+
+jobs:
+  bump:
+    name: Bump develop's version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.compute.outputs.version }}
+
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.bot_app_id }}
+          private-key: ${{ secrets.bot_private_key }}
+          skip-token-revoke: true
+
+      - uses: actions/checkout@v6
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          fetch-depth: 0
+          ref: develop
+
+      - name: Read current version
+        id: current
+        uses: alexdlaird/shipshape/read-version@v1
+        with:
+          version-file: ${{ inputs.version_file }}
+          version-pattern: ${{ inputs.version_pattern }}
+          version-parts: ${{ inputs.version_parts }}
+
+      - name: Compute next version
+        id: compute
+        uses: alexdlaird/shipshape/next-version@v1
+        with:
+          bump-type: ${{ inputs.bump_type }}
+          version-parts: ${{ inputs.version_parts }}
+          current: ${{ steps.current.outputs.version }}
+          current-file-version: ${{ steps.current.outputs.file-version }}
+
+      - name: Bump version in source file
+        if: ${{ steps.compute.outputs.changed == 'true' }}
+        env:
+          VERSION: ${{ steps.compute.outputs.file-version }}
+          VERSION_FILE: ${{ inputs.version_file }}
+          VERSION_PATTERN: ${{ inputs.version_pattern }}
+        run: |
+          PATTERN="${VERSION_PATTERN//\$\{VERSION\}/${VERSION}}"
+          sed -i "${PATTERN}" "${VERSION_FILE}"
+          grep -F "${VERSION}" "${VERSION_FILE}" >/dev/null \
+            || { echo "::error::Version bump failed in ${VERSION_FILE}"; exit 1; }
+
+      - name: Bump pinned versions in additional files
+        if: ${{ steps.compute.outputs.changed == 'true' && inputs.additional_bump_files != '' }}
+        env:
+          OLD_VERSION: ${{ steps.compute.outputs.current }}
+          NEW_VERSION: ${{ steps.compute.outputs.version }}
+          FILES: ${{ inputs.additional_bump_files }}
+        run: |
+          set -euo pipefail
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            sed -i "s/==${OLD_VERSION}/==${NEW_VERSION}/g" "$f"
+            grep -qF "==${NEW_VERSION}" "$f" || { echo "::error::Pin bump failed in ${f}"; exit 1; }
+          done <<< "$FILES"
+
+      - name: Rewrite SECURITY.md's supported versions
+        if: ${{ steps.compute.outputs.changed == 'true' }}
+        uses: alexdlaird/shipshape/security-versions@v1
+        with:
+          version: ${{ steps.compute.outputs.file-version }}
+
+      - name: Run the repo's own version bump
+        if: ${{ steps.compute.outputs.changed == 'true' }}
+        env:
+          VERSION: ${{ steps.compute.outputs.version }}
+        run: |
+          if make -n bump-version VERSION="${VERSION}" >/dev/null 2>&1; then
+            make bump-version VERSION="${VERSION}"
+          fi
+
+      - name: Commit bump to develop (signed)
+        if: ${{ steps.compute.outputs.changed == 'true' }}
+        uses: IAreKyleW00t/verified-bot-commit@v2.3.5
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          repository: ${{ inputs.repo_slug }}
+          ref: develop
+          files: '**'
+          if-no-commit: error
+          message: "Bump version to ${{ steps.compute.outputs.version }}"
+
+      - name: Add bump to job summary
+        env:
+          VERSION: ${{ steps.compute.outputs.version }}
+          CHANGED: ${{ steps.compute.outputs.changed }}
+        run: |
+          if [ "$CHANGED" = "true" ]; then
+            echo "## develop bumped to \`${VERSION}\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## develop already at \`${VERSION}\`" >> "$GITHUB_STEP_SUMMARY"
+          fi

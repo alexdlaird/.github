@@ -1,0 +1,287 @@
+name: Flutter iOS Candidate (Build and upload to TestFlight)
+
+# Builds a Flutter app's IPA on a self-hosted Mac and uploads it to TestFlight as a release candidate, keeping its build
+# number as the `ios-build` artifact; a release later submits that exact build. The app supplies `make build-ipa
+# BUILD=<n>` and the fastlane lanes `next_build_number` (version:, floor:) and `deploy_testflight` (version:,
+# build_number:).
+on:
+  workflow_call:
+    inputs:
+      app_name:
+        description: "Short app name; names the TestFlight concurrency group"
+        required: true
+        type: string
+      version_file:
+        description: "Path to the file containing the version"
+        required: false
+        type: string
+        default: pubspec.yaml
+      version_pattern:
+        description: 'sed expression that writes the version; ${VERSION} is substituted before invocation'
+        required: false
+        type: string
+        default: 's/^version: .*/version: ${VERSION}/'
+      version_parts:
+        description: "3 for X.Y.Z; 2 for X.Y (the file holds X.Y.0)"
+        required: false
+        type: number
+        default: 3
+      runs_on:
+        description: "JSON runner labels for the build (a Mac)"
+        required: false
+        type: string
+        default: '["self-hosted", "macos", "arm64"]'
+      check_runs_on:
+        description: "JSON runner labels for the quick released-version check"
+        required: false
+        type: string
+        default: '"ubuntu-latest"'
+      dotenv:
+        description: "Contents of the app's .env for the build (not secret)"
+        required: false
+        type: string
+        default: 'LOG_LEVEL=INFO'
+      build_number_floor:
+        description: "Lowest build number to use (passed to next_build_number as floor:); empty for none"
+        required: false
+        type: string
+        default: ''
+      crashlytics:
+        description: "Upload dSYMs to Crashlytics"
+        required: false
+        type: boolean
+        default: true
+    secrets:
+      app_store_connect_api_key_id:
+        required: true
+      app_store_connect_api_issuer_id:
+        required: true
+      app_store_connect_api_key:
+        required: true
+      firebase_options_dart:
+        description: "Base64 lib/firebase_options.dart, written before building when given"
+        required: false
+      google_service_info_plist:
+        description: "Base64 ios/Runner/GoogleService-Info.plist, written before building when given"
+        required: false
+    outputs:
+      version:
+        description: "The version built"
+        value: ${{ jobs.build.outputs.version }}
+      build_number:
+        description: "The TestFlight build number (empty when skipped)"
+        value: ${{ jobs.build.outputs.build_number }}
+
+permissions:
+  contents: read
+
+jobs:
+  # App Store Connect takes no more builds for a version once it's released, and develop keeps the released version
+  # until the post-release bump lands, so a commit pushed in that window has no candidate to upload.
+  check:
+    runs-on: ${{ fromJSON(inputs.check_runs_on) }}
+    timeout-minutes: 5
+    outputs:
+      released: ${{ steps.released.outputs.released }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Read version
+        id: version
+        uses: alexdlaird/shipshape/read-version@v1
+        with:
+          version-file: ${{ inputs.version_file }}
+          version-pattern: ${{ inputs.version_pattern }}
+          version-parts: ${{ inputs.version_parts }}
+
+      - name: Check whether this version is already released
+        id: released
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if [ -n "$(git ls-remote --tags origin "refs/tags/${VERSION}")" ]; then
+            echo "released=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "### iOS Deployment Skipped"
+              echo ""
+              echo "${VERSION} is already released, so App Store Connect takes no more builds for it; the next version bump on develop resumes them."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.released != 'true'
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    # 48 minutes for the deploy (TestFlight processing is slow and variable) plus up to 60 waiting for another iOS
+    # deploy on this Mac to release the lock.
+    timeout-minutes: 110
+    # One upload to TestFlight at a time, never cancelled mid-upload; a newer run waits.
+    concurrency:
+      group: ${{ inputs.app_name }}-testflight
+      cancel-in-progress: false
+    outputs:
+      version: ${{ needs.check.outputs.version }}
+      build_number: ${{ steps.build-number.outputs.number }}
+
+    steps:
+      # Every iOS deploy on the Mac shares the user's keychain search list, ~/.appstoreconnect and the provisioning
+      # profiles folder, so deploys from any repo take turns on a machine-wide lock held until the end.
+      - name: Wait for the Mac's iOS deploy lock
+        uses: alexdlaird/shipshape/ios-deploy-lock@v1
+        with:
+          mode: acquire
+
+      - uses: actions/checkout@v6
+
+      - name: Set up Homebrew path
+        run: echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+
+      - name: Select latest stable Xcode
+        uses: alexdlaird/shipshape/select-xcode@v1
+
+      - name: Read Flutter version
+        id: flutter-version
+        run: echo "version=$(tr -d '[:space:]' < .flutter-version)" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Flutter
+        uses: flutter-actions/setup-flutter@v4
+        with:
+          channel: stable
+          version: ${{ steps.flutter-version.outputs.version }}
+          cache: true
+
+      - name: Write Firebase config
+        env:
+          FIREBASE_OPTIONS_DART: ${{ secrets.firebase_options_dart }}
+          GOOGLE_SERVICE_INFO_PLIST: ${{ secrets.google_service_info_plist }}
+        run: |
+          if [ -n "$FIREBASE_OPTIONS_DART" ]; then
+            echo -n "$FIREBASE_OPTIONS_DART" | base64 --decode -o lib/firebase_options.dart
+          fi
+          if [ -n "$GOOGLE_SERVICE_INFO_PLIST" ]; then
+            echo -n "$GOOGLE_SERVICE_INFO_PLIST" | base64 --decode -o ios/Runner/GoogleService-Info.plist
+          fi
+
+      # Cloud signing uses a distribution identity from the keychain search list if one is there; a manually signing
+      # deploy that crashed before its cleanup can leave one, so start from the login keychain alone.
+      - name: Reset keychain search list
+        run: security list-keychain -d user -s login.keychain-db
+
+      - name: Write build environment
+        env:
+          DOTENV: ${{ inputs.dotenv }}
+        run: printf '%s\n' "$DOTENV" > .env
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Install pods
+        uses: alexdlaird/shipshape/pod-install@v1
+
+      - name: Ensure tool cache directory is writable
+        run: |
+          sudo mkdir -p /Users/runner/hostedtoolcache
+          sudo chown "$USER":staff /Users/runner/hostedtoolcache
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler: 'Gemfile.lock'
+          bundler-cache: true
+          working-directory: ios
+
+      - name: Install Fastlane
+        run: cd ios && bundle install
+
+      # The build number comes from App Store Connect (its latest plus one), never below the floor when one is given.
+      - name: Compute build number
+        id: build-number
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.app_store_connect_api_key_id }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.app_store_connect_api_issuer_id }}
+          APP_STORE_CONNECT_API_KEY: ${{ secrets.app_store_connect_api_key }}
+          FASTLANE_SKIP_UPDATE_CHECK: '1'
+          VERSION: ${{ needs.check.outputs.version }}
+          FLOOR: ${{ inputs.build_number_floor }}
+        run: |
+          mkdir -p ~/.appstoreconnect/private_keys
+          echo "$APP_STORE_CONNECT_API_KEY" > ~/.appstoreconnect/private_keys/AuthKey_"${APP_STORE_CONNECT_API_KEY_ID}".p8
+          ARGS=(version:"$VERSION")
+          if [ -n "$FLOOR" ]; then
+            ARGS+=(floor:"$FLOOR")
+          fi
+          OUTPUT=$(cd ios && bundle exec fastlane next_build_number "${ARGS[@]}" 2>&1 || true)
+          NUMBER=$(echo "$OUTPUT" | sed -n 's/.*Next build number for .*: \([0-9]*\)/\1/p' | tail -1)
+          if [ -z "$NUMBER" ]; then
+            echo "$OUTPUT" | tail -40
+            echo "::error::Could not read the next build number from App Store Connect"
+            exit 1
+          fi
+          echo "number=$NUMBER" >> "$GITHUB_OUTPUT"
+          echo "Build: ${VERSION}+${NUMBER}"
+
+      - name: Build IPA
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.app_store_connect_api_key_id }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.app_store_connect_api_issuer_id }}
+        run: make build-ipa BUILD=${{ steps.build-number.outputs.number }}
+
+      - name: Deploy to TestFlight
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.app_store_connect_api_key_id }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.app_store_connect_api_issuer_id }}
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          cd ios && bundle exec fastlane deploy_testflight \
+            version:"$VERSION" build_number:${{ steps.build-number.outputs.number }}
+
+      # A release submits this exact build for App Store review by its number, read from this artifact.
+      - name: Keep the build number for release
+        run: |
+          mkdir -p build/release-candidate
+          echo "${{ steps.build-number.outputs.number }}" > build/release-candidate/build_number.txt
+
+      - name: Upload release candidate
+        uses: actions/upload-artifact@v7
+        with:
+          name: ios-build
+          path: build/release-candidate/build_number.txt
+          retention-days: 90
+
+      # Symbolicates native frames in Crashlytics reports. Runs before Cleanup, which removes the plist.
+      - name: Upload dSYMs to Crashlytics
+        if: inputs.crashlytics
+        run: |
+          ios/Pods/FirebaseCrashlytics/upload-symbols \
+            -gsp ios/Runner/GoogleService-Info.plist \
+            -p ios \
+            build/ios/archive/Runner.xcarchive/dSYMs
+
+      - name: Cleanup
+        if: always()
+        env:
+          FIREBASE_OPTIONS_DART: ${{ secrets.firebase_options_dart }}
+          GOOGLE_SERVICE_INFO_PLIST: ${{ secrets.google_service_info_plist }}
+        run: |
+          rm -rf ~/.appstoreconnect .env
+          if [ -n "$FIREBASE_OPTIONS_DART" ]; then rm -f lib/firebase_options.dart; fi
+          if [ -n "$GOOGLE_SERVICE_INFO_PLIST" ]; then rm -f ios/Runner/GoogleService-Info.plist; fi
+
+      - name: Release the Mac's iOS deploy lock
+        if: always()
+        uses: alexdlaird/shipshape/ios-deploy-lock@v1
+        with:
+          mode: release
+
+      - name: Deployment summary
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          {
+            echo "### iOS Deployment Complete"
+            echo ""
+            echo "- **Build**: \`${VERSION}+${{ steps.build-number.outputs.number }}\`"
+            echo "- **Destination**: TestFlight"
+          } >> "$GITHUB_STEP_SUMMARY"

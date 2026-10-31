@@ -3,27 +3,33 @@ name: Release Pre-req (Squash develop into main)
 on:
   workflow_call:
     inputs:
-      bump_type:
-        description: "patch | minor | major"
-        required: true
-        type: string
       version_file:
         description: "Path to the file containing the version"
         required: true
         type: string
       version_pattern:
-        description: 'sed expression; ${VERSION} will be substituted before invocation'
+        description: 'sed expression that writes the version; ${VERSION} is substituted before invocation'
         required: true
         type: string
+      version_parts:
+        description: "3 for X.Y.Z; 2 for X.Y (the file holds X.Y.0)"
+        required: false
+        type: number
+        default: 3
+      changelog:
+        description: "The repo keeps a CHANGELOG.md whose [Unreleased] entries the release dates. It is then the one file main may differ in from the tested commit."
+        required: false
+        type: boolean
+        default: false
+      ci_workflow:
+        description: "The workflow that tests and builds every push to develop"
+        required: false
+        type: string
+        default: build.yml
       repo_slug:
         description: "owner/repo"
         required: true
         type: string
-      additional_bump_files:
-        description: "Newline-separated list of files where pinned references '==OLD_VERSION' should be rewritten to '==NEW_VERSION'."
-        required: false
-        type: string
-        default: ''
     secrets:
       bot_app_id:
         required: true
@@ -31,13 +37,19 @@ on:
         required: true
     outputs:
       version:
-        description: "Resolved new version"
+        description: "The released version (develop's)"
         value: ${{ jobs.prereq.outputs.version }}
       squash_commit_sha:
-        description: "SHA of new squash commit on main"
+        description: "SHA of the new squash commit on main"
         value: ${{ jobs.prereq.outputs.squash_commit_sha }}
+      squash_boundary_sha:
+        description: "The develop SHA that was squashed into main"
+        value: ${{ jobs.prereq.outputs.squash_boundary_sha }}
+      build_run_id:
+        description: "The ci_workflow push run that tested the squashed SHA; its artifacts are the release's"
+        value: ${{ jobs.prereq.outputs.build_run_id }}
       release_notes:
-        description: "CHANGELOG body for the new version"
+        description: "The CHANGELOG section for the version, or the squashed commit subjects"
         value: ${{ jobs.prereq.outputs.release_notes }}
 
 permissions:
@@ -51,9 +63,11 @@ jobs:
     name: Squash develop into main
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.compute.outputs.new-version }}
+      version: ${{ steps.read-version.outputs.version }}
       squash_commit_sha: ${{ steps.push.outputs.commit }}
-      release_notes: ${{ steps.compute.outputs.release-notes }}
+      squash_boundary_sha: ${{ steps.boundary.outputs.sha }}
+      build_run_id: ${{ steps.wait-for-build.outputs.run-id }}
+      release_notes: ${{ steps.prepare.outputs.release-notes }}
 
     steps:
       - name: Generate GitHub App token
@@ -92,10 +106,10 @@ jobs:
       - name: Pre-validate main is merged into develop
         run: |
           # A release that stopped after pushing main (cancelled, or its cleanup failed) leaves main with commits
-          # develop doesn't have; squashing on top of them loses this release's changelog and version.
+          # develop doesn't have; squashing on top of them loses that release.
           if ! git merge-base --is-ancestor main origin/develop; then
             LAST=$(git log -1 --format='%h %s' main)
-            echo "::error::main has commits develop doesn't (last: ${LAST}). Merge main into develop first (keep develop's code and main's version and changelog), tag main's release commit if it has no tag, then re-run."
+            echo "::error::main has commits develop doesn't (last: ${LAST}). Merge main into develop first (keep develop's code and main's changelog), tag main's release commit if it has no tag, then re-run."
             exit 1
           fi
 
@@ -107,144 +121,62 @@ jobs:
         run: |
           AHEAD=$(git rev-list --count main..origin/develop)
           if [ "$AHEAD" -eq 0 ]; then
-            echo "::error::develop has no new commits over main — nothing to release."
+            echo "::error::develop has no new commits over main; nothing to release."
             exit 1
           fi
-          echo "develop is $AHEAD commits ahead of main"
+          echo "develop is ${AHEAD} commits ahead of main"
+
+      - name: Read release version
+        id: read-version
+        uses: alexdlaird/shipshape/read-version@v1
+        with:
+          version-file: ${{ inputs.version_file }}
+          version-pattern: ${{ inputs.version_pattern }}
+          version-parts: ${{ inputs.version_parts }}
+          ref: ${{ steps.boundary.outputs.sha }}
+
+      - name: Pre-validate version is unreleased
+        uses: alexdlaird/shipshape/check-unreleased@v1
+        with:
+          version: ${{ steps.read-version.outputs.version }}
 
       - name: Squash develop into main
-        run: git merge --squash origin/develop
+        env:
+          SQUASH_BOUNDARY: ${{ steps.boundary.outputs.sha }}
+        run: git merge --squash "$SQUASH_BOUNDARY"
 
-      - name: Compute version + rewrite CHANGELOG
-        id: compute
-        uses: alexdlaird/.github/actions/prepare-release@main
+      - name: Prepare release notes (and CHANGELOG)
+        id: prepare
+        uses: alexdlaird/shipshape/prepare-release@v1
         with:
-          bump-type: ${{ inputs.bump_type }}
+          changelog: ${{ inputs.changelog }}
+          version: ${{ steps.read-version.outputs.version }}
+          version-parts: ${{ inputs.version_parts }}
           repo-slug: ${{ inputs.repo_slug }}
-
-      - name: Pre-validate tag does not already exist
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          NEW_VERSION: ${{ steps.compute.outputs.new-version }}
-          REPO_SLUG: ${{ inputs.repo_slug }}
-        run: |
-          if gh api "repos/${REPO_SLUG}/git/refs/tags/${NEW_VERSION}" >/dev/null 2>&1; then
-            echo "::error::Tag ${NEW_VERSION} already exists."
-            exit 1
-          fi
-
-      - name: Bump version in source file
-        env:
-          VERSION: ${{ steps.compute.outputs.new-version }}
-          VERSION_FILE: ${{ inputs.version_file }}
-          VERSION_PATTERN: ${{ inputs.version_pattern }}
-        run: |
-          PATTERN="${VERSION_PATTERN//\$\{VERSION\}/${VERSION}}"
-          sed -i "${PATTERN}" "${VERSION_FILE}"
-          grep -F "${VERSION}" "${VERSION_FILE}" >/dev/null \
-            || { echo "::error::Version bump failed in ${VERSION_FILE}"; exit 1; }
-
-      - name: Bump pinned versions in additional files
-        if: inputs.additional_bump_files != ''
-        env:
-          OLD_VERSION: ${{ steps.compute.outputs.old-version }}
-          NEW_VERSION: ${{ steps.compute.outputs.new-version }}
-          FILES: ${{ inputs.additional_bump_files }}
-        run: |
-          set -euo pipefail
-          while IFS= read -r f; do
-            [ -z "$f" ] && continue
-            sed -i "s/==${OLD_VERSION}/==${NEW_VERSION}/g" "$f"
-            grep -qF "==${NEW_VERSION}" "$f" || { echo "::error::Pin bump failed in ${f}"; exit 1; }
-          done <<< "$FILES"
+          tested-sha: ${{ steps.boundary.outputs.sha }}
 
       - name: Run repo validation
         env:
-          VERSION: ${{ steps.compute.outputs.new-version }}
-        run: make validate-release VERSION="${VERSION}"
-
-      - name: Wait for build.yml on develop HEAD to succeed
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          DEVELOP_SHA: ${{ steps.boundary.outputs.sha }}
-          REPO_SLUG: ${{ inputs.repo_slug }}
-          CI_TIMEOUT_MINUTES: 20
+          VERSION: ${{ steps.read-version.outputs.version }}
         run: |
-          set -euo pipefail
-          DEADLINE=$(( $(date +%s) + CI_TIMEOUT_MINUTES * 60 ))
-          POLL_INTERVAL=30
-
-          # Guard: develop must not have moved since boundary was recorded
-          CURRENT=$(gh api "repos/${REPO_SLUG}/git/refs/heads/develop" --jq .object.sha)
-          if [ "$CURRENT" != "$DEVELOP_SHA" ]; then
-            echo "::error::develop HEAD moved during release (was ${DEVELOP_SHA}, now ${CURRENT}). Abort and re-dispatch."
-            exit 1
+          if make -n validate-release VERSION="${VERSION}" >/dev/null 2>&1; then
+            make validate-release VERSION="${VERSION}"
           fi
 
-          latest_run() {
-            gh api "repos/${REPO_SLUG}/actions/workflows/build.yml/runs?head_sha=${DEVELOP_SHA}" \
-              --jq '.workflow_runs | max_by(.id) // empty'
-          }
+      - name: Verify main gets develop's tested code
+        uses: alexdlaird/shipshape/verify-tree@v1
+        with:
+          tested-sha: ${{ steps.boundary.outputs.sha }}
+          changelog: ${{ inputs.changelog }}
 
-          LATEST=$(latest_run)
-          if [ -z "$LATEST" ]; then
-            RUN_ID=""; RUN_STATUS=""; RUN_CONCLUSION=""
-          else
-            RUN_ID=$(jq -r '.id' <<< "$LATEST")
-            RUN_STATUS=$(jq -r '.status' <<< "$LATEST")
-            RUN_CONCLUSION=$(jq -r '.conclusion // ""' <<< "$LATEST")
-          fi
-
-          TRIGGER_FRESH=false
-          if [ -z "$RUN_ID" ]; then
-            echo "No build.yml run for ${DEVELOP_SHA}; triggering fresh dispatch"
-            TRIGGER_FRESH=true
-          elif [ "$RUN_STATUS" = "completed" ] && [ "$RUN_CONCLUSION" != "success" ]; then
-            echo "Latest build.yml run ${RUN_ID} concluded '${RUN_CONCLUSION}'; triggering fresh dispatch"
-            TRIGGER_FRESH=true
-          else
-            echo "Tracking existing build.yml run ${RUN_ID} (status=${RUN_STATUS})"
-          fi
-
-          if [ "$TRIGGER_FRESH" = "true" ]; then
-            PRIOR_ID="${RUN_ID:-0}"
-            gh workflow run build.yml --ref develop --repo "${REPO_SLUG}"
-            for _ in $(seq 1 12); do
-              sleep 5
-              NEXT=$(latest_run)
-              [ -z "$NEXT" ] && continue
-              NEXT_ID=$(jq -r '.id' <<< "$NEXT")
-              if [ "$NEXT_ID" != "$PRIOR_ID" ]; then
-                RUN_ID=$NEXT_ID
-                echo "Fresh build.yml run registered: ${RUN_ID}"
-                break
-              fi
-            done
-            if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "$PRIOR_ID" ]; then
-              echo "::error::Fresh build.yml dispatch did not register a new run for ${DEVELOP_SHA} within 60s"
-              exit 1
-            fi
-          fi
-
-          while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-            RUN=$(gh api "repos/${REPO_SLUG}/actions/runs/${RUN_ID}")
-            STATUS=$(jq -r '.status' <<< "$RUN")
-            REMAINING=$(( DEADLINE - $(date +%s) ))
-            if [ "$STATUS" = "completed" ]; then
-              CONCLUSION=$(jq -r '.conclusion // ""' <<< "$RUN")
-              if [ "$CONCLUSION" = "success" ]; then
-                echo "build.yml run ${RUN_ID} succeeded on develop HEAD"
-                exit 0
-              fi
-              echo "::error::build.yml run ${RUN_ID} concluded '${CONCLUSION}'"
-              exit 1
-            fi
-            echo "build.yml run ${RUN_ID} status=${STATUS} (${REMAINING}s remaining)"
-            sleep $POLL_INTERVAL
-          done
-
-          echo "::error::Timed out waiting for build.yml run ${RUN_ID} after ${CI_TIMEOUT_MINUTES} minutes"
-          exit 1
+      - name: Wait for the develop push run to succeed
+        id: wait-for-build
+        uses: alexdlaird/shipshape/wait-for-ci@v1
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          sha: ${{ steps.boundary.outputs.sha }}
+          repo-slug: ${{ inputs.repo_slug }}
+          workflow: ${{ inputs.ci_workflow }}
 
       - name: Commit squash to main (signed, keeping file modes)
         id: push
@@ -256,18 +188,25 @@ jobs:
           files: '**'
           if-no-commit: error
           message: |
-            Release ${{ steps.compute.outputs.new-version }}
+            Release ${{ steps.read-version.outputs.version }}
 
-            ${{ steps.compute.outputs.release-notes }}
+            ${{ steps.prepare.outputs.release-notes }}
+
+      - name: Verify main is the tested code
+        uses: alexdlaird/shipshape/verify-tree@v1
+        with:
+          tested-sha: ${{ steps.boundary.outputs.sha }}
+          commit: ${{ steps.push.outputs.commit }}
+          changelog: ${{ inputs.changelog }}
 
       - name: Add release to job summary
         env:
-          NEW_VERSION: ${{ steps.compute.outputs.new-version }}
+          VERSION: ${{ steps.read-version.outputs.version }}
           SHA: ${{ steps.push.outputs.commit }}
           REPO_SLUG: ${{ inputs.repo_slug }}
         run: |
           {
-            echo "## Release \`${NEW_VERSION}\`"
+            echo "## Release \`${VERSION}\`"
             echo ""
             echo "Squash commit: [\`${SHA:0:7}\`](https://github.com/${REPO_SLUG}/commit/${SHA})"
           } >> "$GITHUB_STEP_SUMMARY"

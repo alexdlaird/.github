@@ -1,0 +1,111 @@
+name: Release Finish (Tag, sync develop, bump)
+
+# The end of a release once its deploys ran: tag the squash commit (when everything shipped), merge main back into
+# develop either way, then bump develop to the next version (after a tag).
+on:
+  workflow_call:
+    inputs:
+      shipped:
+        description: "Whether every deploy and submission the release ran succeeded; only then is it tagged and bumped"
+        required: true
+        type: boolean
+      version:
+        description: "The released version"
+        required: true
+        type: string
+      squash_commit_sha:
+        description: "The release's squash commit on main"
+        required: true
+        type: string
+      squash_boundary_sha:
+        description: "The develop commit that was squashed"
+        required: true
+        type: string
+      build_run_id:
+        description: "The CI run whose builds the release shipped; recorded in the tag as Build-Run"
+        required: true
+        type: string
+      consolidate_history:
+        description: "Reset develop to main after release (force-push), when it shipped"
+        required: false
+        type: boolean
+        default: false
+      version_file:
+        description: "Path to the file containing the version"
+        required: true
+        type: string
+      version_pattern:
+        description: 'sed expression that writes the version; ${VERSION} is substituted before invocation'
+        required: true
+        type: string
+      version_parts:
+        description: "3 for X.Y.Z; 2 for X.Y (the file holds X.Y.0)"
+        required: false
+        type: number
+        default: 3
+      repo_slug:
+        description: "owner/repo"
+        required: true
+        type: string
+    secrets:
+      bot_app_id:
+        required: true
+      bot_private_key:
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  # Tags on GitHub's Linux runners, never a self-hosted Mac, whose runner uses its owner's git config.
+  tag:
+    if: inputs.shipped
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.squash_commit_sha }}
+
+      - name: Tag the release
+        env:
+          VERSION: ${{ inputs.version }}
+          COMMIT_SHA: ${{ inputs.squash_commit_sha }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Build-Run names the CI run whose candidates this release shipped
+          git tag -a "$VERSION" -m "Release $VERSION" -m "Build-Run: ${BUILD_RUN_ID}" "$COMMIT_SHA"
+          git push origin "refs/tags/${VERSION}"
+          {
+            echo "### Release"
+            echo ""
+            echo "- **Version**: \`${VERSION}\`"
+            echo "- **Commit**: \`${COMMIT_SHA}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  cleanup:
+    needs: [tag]
+    if: always()
+    uses: alexdlaird/.github/.github/workflows/release-cleanup.yml@main
+    with:
+      consolidate_history: ${{ inputs.consolidate_history && needs.tag.result == 'success' }}
+      squash_boundary_sha: ${{ inputs.squash_boundary_sha }}
+    secrets:
+      bot_app_id: ${{ secrets.bot_app_id }}
+      bot_private_key: ${{ secrets.bot_private_key }}
+
+  bump:
+    needs: [tag, cleanup]
+    if: always() && needs.tag.result == 'success'
+    uses: alexdlaird/.github/.github/workflows/bump-version.yml@main
+    with:
+      bump_type: next
+      version_file: ${{ inputs.version_file }}
+      version_pattern: ${{ inputs.version_pattern }}
+      version_parts: ${{ inputs.version_parts }}
+      repo_slug: ${{ inputs.repo_slug }}
+    secrets:
+      bot_app_id: ${{ secrets.bot_app_id }}
+      bot_private_key: ${{ secrets.bot_private_key }}

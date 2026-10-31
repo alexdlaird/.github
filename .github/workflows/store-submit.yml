@@ -1,0 +1,206 @@
+name: Store Submit (Submit a release's candidates for review)
+
+# Submits the builds CI uploaded for a released commit: the TestFlight build for App Store review and the Internal-track
+# version code for Play Production review, by the numbers in that CI run's `ios-build` / `android-build` artifacts.
+# The app supplies the fastlane lanes `submit_appstore` (version:, build_number:, push_store_assets:) and
+# `submit_production` (version:, version_code:, push_store_assets:; re-staging from Play's library if Internal moved on).
+on:
+  workflow_call:
+    inputs:
+      app_name:
+        description: "Short app name; names the TestFlight and Google Play concurrency groups (shared with the candidate builds)"
+        required: true
+        type: string
+      version:
+        description: "The released version, as the lanes take it"
+        required: true
+        type: string
+      ref:
+        description: "The released commit"
+        required: true
+        type: string
+      build_run_id:
+        description: "The CI run that built the release candidates"
+        required: true
+        type: string
+      push_store_assets:
+        description: "Also replace store screenshots and listing assets"
+        required: false
+        type: boolean
+        default: false
+      ios:
+        description: "Submit to the App Store"
+        required: false
+        type: boolean
+        default: true
+      android:
+        description: "Submit to Google Play"
+        required: false
+        type: boolean
+        default: true
+      ios_runs_on:
+        description: "JSON runner labels for the App Store submission (the Mac that holds the iOS deploy lock)"
+        required: false
+        type: string
+        default: '["self-hosted", "macos", "arm64"]'
+      android_runs_on:
+        description: "JSON runner labels for the Play submission"
+        required: false
+        type: string
+        default: '"ubuntu-latest"'
+      app_review_first_name:
+        description: "App Review contact"
+        required: false
+        type: string
+        default: ''
+      app_review_last_name:
+        description: "App Review contact"
+        required: false
+        type: string
+        default: ''
+      app_review_email:
+        description: "App Review contact"
+        required: false
+        type: string
+        default: ''
+    secrets:
+      app_store_connect_api_key_id:
+        required: false
+      app_store_connect_api_issuer_id:
+        required: false
+      app_store_connect_api_key:
+        required: false
+      app_review_phone:
+        required: false
+      google_play_service_account_key:
+        required: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  # Only fastlane runs, but on the Mac: it shares ~/.appstoreconnect with every iOS deploy there, so it takes the same
+  # lock.
+  ios:
+    if: inputs.ios
+    runs-on: ${{ fromJSON(inputs.ios_runs_on) }}
+    timeout-minutes: 90
+    concurrency:
+      group: ${{ inputs.app_name }}-testflight
+      cancel-in-progress: false
+
+    steps:
+      - name: Wait for the Mac's iOS deploy lock
+        uses: alexdlaird/shipshape/ios-deploy-lock@v1
+        with:
+          mode: acquire
+
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Set up Homebrew path
+        run: echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
+
+      - name: Download the release's build number
+        uses: actions/download-artifact@v8
+        with:
+          name: ios-build
+          path: build/release-candidate
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Ensure tool cache directory is writable
+        run: |
+          sudo mkdir -p /Users/runner/hostedtoolcache
+          sudo chown "$USER":staff /Users/runner/hostedtoolcache
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler: 'Gemfile.lock'
+          bundler-cache: true
+          working-directory: ios
+
+      - name: Install Fastlane
+        run: cd ios && bundle install
+
+      - name: Submit for App Store review
+        env:
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.app_store_connect_api_key_id }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.app_store_connect_api_issuer_id }}
+          APP_STORE_CONNECT_API_KEY: ${{ secrets.app_store_connect_api_key }}
+          APP_REVIEW_FIRST_NAME: ${{ inputs.app_review_first_name }}
+          APP_REVIEW_LAST_NAME: ${{ inputs.app_review_last_name }}
+          APP_REVIEW_EMAIL: ${{ inputs.app_review_email }}
+          APP_REVIEW_PHONE: ${{ secrets.app_review_phone }}
+          VERSION: ${{ inputs.version }}
+          PUSH_STORE_ASSETS: ${{ inputs.push_store_assets }}
+        run: |
+          mkdir -p ~/.appstoreconnect/private_keys
+          echo "$APP_STORE_CONNECT_API_KEY" > ~/.appstoreconnect/private_keys/AuthKey_"${APP_STORE_CONNECT_API_KEY_ID}".p8
+          BUILD_NUMBER=$(cat build/release-candidate/build_number.txt)
+          cd ios && bundle exec fastlane submit_appstore \
+            version:"$VERSION" build_number:"$BUILD_NUMBER" push_store_assets:"$PUSH_STORE_ASSETS"
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf ~/.appstoreconnect
+
+      - name: Release the Mac's iOS deploy lock
+        if: always()
+        uses: alexdlaird/shipshape/ios-deploy-lock@v1
+        with:
+          mode: release
+
+  android:
+    if: inputs.android
+    runs-on: ${{ fromJSON(inputs.android_runs_on) }}
+    timeout-minutes: 20
+    concurrency:
+      group: ${{ inputs.app_name }}-google-play
+      cancel-in-progress: false
+
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Download the release's version code
+        uses: actions/download-artifact@v8
+        with:
+          name: android-build
+          path: build/release-candidate
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler: 'Gemfile.lock'
+          bundler-cache: true
+          working-directory: android
+
+      - name: Install Fastlane
+        run: cd android && bundle install
+
+      - name: Write Google Play service account key
+        env:
+          GOOGLE_PLAY_SERVICE_ACCOUNT_KEY: ${{ secrets.google_play_service_account_key }}
+        run: echo "$GOOGLE_PLAY_SERVICE_ACCOUNT_KEY" > android/service-account-key.json
+
+      - name: Submit for Production review
+        env:
+          VERSION: ${{ inputs.version }}
+          PUSH_STORE_ASSETS: ${{ inputs.push_store_assets }}
+        run: |
+          VERSION_CODE=$(cat build/release-candidate/version_code.txt)
+          cd android && bundle exec fastlane submit_production \
+            version:"$VERSION" version_code:"$VERSION_CODE" push_store_assets:"$PUSH_STORE_ASSETS"
+
+      - name: Cleanup
+        if: always()
+        run: rm -f android/service-account-key.json
