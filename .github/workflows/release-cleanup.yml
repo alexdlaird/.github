@@ -13,6 +13,11 @@ on:
         required: false
         type: string
         default: ""
+      skip_ci:
+        description: "Mark the merge into develop [skip ci]; true when a version bump follows, so only the bump builds"
+        required: false
+        type: boolean
+        default: false
     secrets:
       bot_app_id:
         required: true
@@ -105,6 +110,7 @@ jobs:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           REPO: ${{ github.repository }}
           ACTOR: ${{ github.actor }}
+          MERGE_MESSAGE: ${{ inputs.skip_ci && '[skip ci] Merge main into develop' || 'Merge main into develop' }}
         run: |
           set -euo pipefail
 
@@ -125,7 +131,7 @@ jobs:
           echo "CHANGELOG.md merge=take-theirs" >> .git/info/attributes
           git config merge.take-theirs.driver 'cp -f "%B" "%A"'
 
-          if git merge --no-ff -m "Merge main into develop" origin/main; then
+          if git merge --no-ff -m "$MERGE_MESSAGE" origin/main; then
             git push origin develop
             echo "Merged main into develop ($(git rev-parse --short HEAD))"
             exit 0

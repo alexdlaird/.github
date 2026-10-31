@@ -92,6 +92,7 @@ jobs:
     with:
       consolidate_history: ${{ inputs.consolidate_history && needs.tag.result == 'success' }}
       squash_boundary_sha: ${{ inputs.squash_boundary_sha }}
+      skip_ci: ${{ needs.tag.result == 'success' }}
     secrets:
       bot_app_id: ${{ secrets.bot_app_id }}
       bot_private_key: ${{ secrets.bot_private_key }}
