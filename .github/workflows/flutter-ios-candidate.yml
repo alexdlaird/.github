@@ -220,7 +220,7 @@ jobs:
           if [ -n "$FLOOR" ]; then
             ARGS+=(floor:"$FLOOR")
           fi
-          OUTPUT=$(cd ios && bundle exec fastlane next_build_number "${ARGS[@]}" 2>&1 || true)
+          OUTPUT=$(cd ios && bundle exec fastlane next_build_number "${ARGS[@]}" 2>&1) || true
           NUMBER=$(echo "$OUTPUT" | sed -n 's/.*Next build number[^:]*: \([0-9]*\)/\1/p' | tail -1)
           if [ -z "$NUMBER" ]; then
             echo "$OUTPUT" | tail -40
