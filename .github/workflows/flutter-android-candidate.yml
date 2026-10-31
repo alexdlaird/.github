@@ -2,7 +2,7 @@ name: Flutter Android Candidate (Build and upload to Play Internal)
 
 # Builds a Flutter app's signed app bundle and uploads it to Google Play's Internal track as a release candidate,
 # keeping its version code as the `android-build` artifact; a release later promotes that exact version code. The app
-# supplies `make build-aab BUILD=<n>` (signing from SIGNING_* environment variables) and the fastlane lanes
+# supplies `make build-aab BUILD=<n>` (VERSION and signing from SIGNING_* in the environment) and the fastlane lanes
 # `next_version_code` and `deploy_internal` (aab_path:, version:).
 on:
   workflow_call:
@@ -53,6 +53,9 @@ on:
       google_services_json:
         description: "Base64 android/app/google-services.json, written before building when given"
         required: false
+      build_secrets:
+        description: "Extra build environment (NAME=value per line), such as a crash reporter's keys; set for the build and upload"
+        required: false
     outputs:
       version:
         description: "The version built"
@@ -87,6 +90,21 @@ jobs:
           df -h /
 
       - uses: actions/checkout@v6
+
+      # Values only this app's build and upload read (NAME=value per line), kept as secrets and set for the rest of
+      # the job.
+      - name: Export build secrets
+        env:
+          BUILD_SECRETS: ${{ secrets.build_secrets }}
+        run: |
+          while IFS= read -r LINE; do
+            [ -z "$LINE" ] && continue
+            if ! [[ "$LINE" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+              echo "::error::build_secrets has a line that isn't NAME=value"
+              exit 1
+            fi
+            echo "$LINE" >> "$GITHUB_ENV"
+          done <<< "$BUILD_SECRETS"
 
       # GitHub's Linux image sets it; a Mac's SDK is Android Studio's.
       - name: Point at the Mac's Android SDK
@@ -194,6 +212,7 @@ jobs:
           SIGNING_KEY_PASSWORD: ${{ secrets.android_signing_key_password }}
           SIGNING_STORE_FILE: ${{ runner.temp }}/upload-key.jks
           SIGNING_STORE_PASSWORD: ${{ secrets.android_signing_store_password }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: make build-aab BUILD=${{ steps.build-number.outputs.number }}
 
       - name: Deploy to Google Play Internal track

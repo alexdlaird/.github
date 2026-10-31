@@ -1,8 +1,8 @@
 name: Flutter iOS Candidate (Build and upload to TestFlight)
 
-# Builds a Flutter app's IPA on a self-hosted Mac and uploads it to TestFlight as a release candidate, keeping its build
-# number as the `ios-build` artifact; a release later submits that exact build. The app supplies `make build-ipa
-# BUILD=<n>` and the fastlane lanes `next_build_number` (version:, floor:) and `deploy_testflight` (version:,
+# Builds a Flutter app's IPA on a Mac (self-hosted by default) and uploads it to TestFlight as a release candidate,
+# keeping its build number as the `ios-build` artifact; a release later submits that exact build. The app supplies `make
+# build-ipa BUILD=<n>` (VERSION in the environment) and the fastlane lanes `next_build_number` (version:, floor:) and `deploy_testflight` (version:,
 # build_number:).
 on:
   workflow_call:
@@ -27,7 +27,7 @@ on:
         type: number
         default: 3
       runs_on:
-        description: "JSON runner labels for the build (a Mac)"
+        description: "JSON runner labels for the build (a Mac; '\"macos-latest\"' for GitHub's)"
         required: false
         type: string
         default: '["self-hosted", "macos", "arm64"]'
@@ -63,6 +63,9 @@ on:
         required: false
       google_service_info_plist:
         description: "Base64 ios/Runner/GoogleService-Info.plist, written before building when given"
+        required: false
+      build_secrets:
+        description: "Extra build environment (NAME=value per line), such as a crash reporter's keys; set for the build and upload"
         required: false
     outputs:
       version:
@@ -114,7 +117,7 @@ jobs:
     if: needs.check.outputs.released != 'true'
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     # 48 minutes for the deploy (TestFlight processing is slow and variable) plus up to 60 waiting for another iOS
-    # deploy on this Mac to release the lock.
+    # deploy on a self-hosted Mac to release the lock.
     timeout-minutes: 110
     # One upload to TestFlight at a time, never cancelled mid-upload; a newer run waits.
     concurrency:
@@ -125,14 +128,31 @@ jobs:
       build_number: ${{ steps.build-number.outputs.number }}
 
     steps:
-      # Every iOS deploy on the Mac shares the user's keychain search list, ~/.appstoreconnect and the provisioning
-      # profiles folder, so deploys from any repo take turns on a machine-wide lock held until the end.
+      # Every iOS deploy on a self-hosted Mac shares the user's keychain search list, ~/.appstoreconnect and the
+      # provisioning profiles folder, so deploys from any repo take turns on a machine-wide lock held until the end.
+      # GitHub's Macs are fresh for each job.
       - name: Wait for the Mac's iOS deploy lock
+        if: runner.environment == 'self-hosted'
         uses: alexdlaird/shipshape/ios-deploy-lock@v1
         with:
           mode: acquire
 
       - uses: actions/checkout@v6
+
+      # Values only this app's build and upload read (NAME=value per line), kept as secrets and set for the rest of
+      # the job.
+      - name: Export build secrets
+        env:
+          BUILD_SECRETS: ${{ secrets.build_secrets }}
+        run: |
+          while IFS= read -r LINE; do
+            [ -z "$LINE" ] && continue
+            if ! [[ "$LINE" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]]; then
+              echo "::error::build_secrets has a line that isn't NAME=value"
+              exit 1
+            fi
+            echo "$LINE" >> "$GITHUB_ENV"
+          done <<< "$BUILD_SECRETS"
 
       - name: Set up Homebrew path
         run: echo "/opt/homebrew/bin" >> "$GITHUB_PATH"
@@ -166,6 +186,7 @@ jobs:
       # Cloud signing uses a distribution identity from the keychain search list if one is there; a manually signing
       # deploy that crashed before its cleanup can leave one, so start from the login keychain alone.
       - name: Reset keychain search list
+        if: runner.environment == 'self-hosted'
         run: security list-keychain -d user -s login.keychain-db
 
       # An entry with no value is a repository variable that isn't set
@@ -188,6 +209,7 @@ jobs:
         uses: alexdlaird/shipshape/pod-install@v1
 
       - name: Ensure tool cache directory is writable
+        if: runner.environment == 'self-hosted'
         run: |
           sudo mkdir -p /Users/runner/hostedtoolcache
           sudo chown "$USER":staff /Users/runner/hostedtoolcache
@@ -234,6 +256,7 @@ jobs:
         env:
           APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.app_store_connect_api_key_id }}
           APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.app_store_connect_api_issuer_id }}
+          VERSION: ${{ needs.check.outputs.version }}
         run: make build-ipa BUILD=${{ steps.build-number.outputs.number }}
 
       - name: Deploy to TestFlight
@@ -278,7 +301,7 @@ jobs:
           if [ -n "$GOOGLE_SERVICE_INFO_PLIST" ]; then rm -f ios/Runner/GoogleService-Info.plist; fi
 
       - name: Release the Mac's iOS deploy lock
-        if: always()
+        if: always() && runner.environment == 'self-hosted'
         uses: alexdlaird/shipshape/ios-deploy-lock@v1
         with:
           mode: release
