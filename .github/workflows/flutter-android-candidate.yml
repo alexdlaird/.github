@@ -32,7 +32,7 @@ on:
         type: string
         default: '"ubuntu-latest"'
       dotenv:
-        description: "Contents of the app's .env for the build (not secret)"
+        description: "Contents of the app's .env for the build (not secret); empty writes none"
         required: false
         type: string
         default: 'LOG_LEVEL=INFO'
@@ -131,10 +131,18 @@ jobs:
             echo -n "$GOOGLE_SERVICES_JSON" | base64 --decode > android/app/google-services.json
           fi
 
+      # An entry with no value is a repository variable that isn't set
       - name: Write build environment
+        if: inputs.dotenv != ''
         env:
           DOTENV: ${{ inputs.dotenv }}
-        run: printf '%s\n' "$DOTENV" > .env
+        run: |
+          EMPTY=$(printf '%s\n' "$DOTENV" | sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)=$/\1/p' | paste -sd, -)
+          if [ -n "$EMPTY" ]; then
+            echo "::error::.env has no value for ${EMPTY}; set the repository variables it's built from"
+            exit 1
+          fi
+          printf '%s\n' "$DOTENV" > .env
 
       - name: Setup Ruby
         uses: ruby/setup-ruby@v1
