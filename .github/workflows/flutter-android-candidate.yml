@@ -88,7 +88,6 @@ jobs:
 
       - uses: actions/checkout@v6
 
-
       # GitHub's Linux image sets it; a Mac's SDK is Android Studio's.
       - name: Point at the Mac's Android SDK
         if: runner.os == 'macOS'
