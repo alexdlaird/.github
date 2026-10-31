@@ -79,6 +79,14 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # A release bundle's Gradle build, plus saving its cache, can fill GitHub's Linux disk; it ships toolchains the
+      # build never uses.
+      - name: Free disk space
+        if: runner.os == 'Linux' && runner.environment == 'github-hosted'
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/share/boost "$AGENT_TOOLSDIRECTORY/CodeQL"
+          df -h /
+
       # GitHub's Linux image sets it; a Mac's SDK is Android Studio's.
       - name: Point at the Mac's Android SDK
         if: runner.os == 'macOS'
