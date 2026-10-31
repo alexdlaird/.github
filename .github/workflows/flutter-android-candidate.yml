@@ -77,15 +77,17 @@ jobs:
       version_code: ${{ steps.build-number.outputs.number }}
 
     steps:
-      - uses: actions/checkout@v6
-
-      # A release bundle's Gradle build, plus saving its cache, can fill GitHub's Linux disk; it ships toolchains the
-      # build never uses.
+      # GitHub's Linux runner starts with about 14 GB free, and R8 on the release bundle runs out: toolchains this job
+      # never uses go (the Android SDK and NDK it builds with stay).
       - name: Free disk space
         if: runner.os == 'Linux' && runner.environment == 'github-hosted'
         run: |
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/share/boost "$AGENT_TOOLSDIRECTORY/CodeQL"
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift \
+            /usr/local/share/boost /usr/local/lib/node_modules /opt/microsoft
           df -h /
+
+      - uses: actions/checkout@v6
+
 
       # GitHub's Linux image sets it; a Mac's SDK is Android Studio's.
       - name: Point at the Mac's Android SDK
