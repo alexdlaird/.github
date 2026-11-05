@@ -2,7 +2,7 @@ name: Flutter Android Candidate (Build and upload to Play Internal)
 
 # Builds a Flutter app's signed app bundle and uploads it to Google Play's Internal track as a release candidate,
 # keeping its version code as the `android-build` artifact; a release later promotes that exact version code. The app
-# supplies `make build-aab BUILD=<n>` (VERSION and signing from SIGNING_* in the environment) and the fastlane lanes
+# supplies `make build-aab BUILD=<n>` (VERSION and signing from SIGNING_* in the environment) and the `fastlane` lanes
 # `next_version_code` and `deploy_internal` (aab_path:, version:).
 on:
   workflow_call:
@@ -71,7 +71,6 @@ jobs:
   build:
     runs-on: ${{ fromJSON(inputs.runs_on) }}
     timeout-minutes: 40
-    # One upload to Google Play at a time, never cancelled mid-upload; a newer run waits.
     concurrency:
       group: ${{ inputs.app_name }}-google-play
       cancel-in-progress: false

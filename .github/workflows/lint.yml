@@ -21,8 +21,17 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # Through the API with the job's token: anonymous release downloads from runners can come back as an error page.
       - name: Install actionlint
-        run: bash <(curl -fsSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACTIONLINT_VERSION: 1.7.12
+        run: |
+          ARCHIVE="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          CHECKSUMS="actionlint_${ACTIONLINT_VERSION}_checksums.txt"
+          gh release download "v${ACTIONLINT_VERSION}" --repo rhysd/actionlint --pattern "$ARCHIVE" --pattern "$CHECKSUMS"
+          grep " ${ARCHIVE}\$" "$CHECKSUMS" | sha256sum --check -
+          tar -xzf "$ARCHIVE" actionlint
 
       - name: Lint workflows
         run: ./actionlint -color

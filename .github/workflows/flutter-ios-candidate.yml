@@ -2,7 +2,7 @@ name: Flutter iOS Candidate (Build and upload to TestFlight)
 
 # Builds a Flutter app's IPA on a Mac (self-hosted by default) and uploads it to TestFlight as a release candidate,
 # keeping its build number as the `ios-build` artifact; a release later submits that exact build. The app supplies `make
-# build-ipa BUILD=<n>` (VERSION in the environment) and the fastlane lanes `next_build_number` (version:, floor:) and `deploy_testflight` (version:,
+# build-ipa BUILD=<n>` (VERSION in the environment) and the `fastlane` lanes `next_build_number` (version:, floor:) and `deploy_testflight` (version:,
 # build_number:).
 on:
   workflow_call:
@@ -119,7 +119,6 @@ jobs:
     # 48 minutes for the deploy (TestFlight processing is slow and variable) plus up to 60 waiting for another iOS
     # deploy on a self-hosted Mac to release the lock.
     timeout-minutes: 110
-    # One upload to TestFlight at a time, never cancelled mid-upload; a newer run waits.
     concurrency:
       group: ${{ inputs.app_name }}-testflight
       cancel-in-progress: false

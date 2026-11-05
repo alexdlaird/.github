@@ -1,0 +1,231 @@
+name: Release (main-only)
+
+# Optional Makefile hooks: `release-version VERSION=...` writes the version to other files (list them in
+# `release_files`); `validate-release VERSION=...` checks the release before it's committed.
+on:
+  workflow_call:
+    inputs:
+      bump_type:
+        description: "patch, minor or major"
+        required: true
+        type: string
+      version_file:
+        description: "Path to the file containing the version"
+        required: true
+        type: string
+      version_pattern:
+        description: 'sed expression that writes the version; ${VERSION} is substituted before invocation'
+        required: true
+        type: string
+      release_files:
+        description: "Other files the release may change (one per line), written by the repo's `make release-version`"
+        required: false
+        type: string
+        default: ''
+      move_major_tag:
+        description: "Move the major tag (vN) to the release, for callers that pin it"
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      bot_app_id:
+        required: true
+      bot_private_key:
+        required: true
+    outputs:
+      version:
+        description: "The released version"
+        value: ${{ jobs.release.outputs.version }}
+      release_commit_sha:
+        description: "The release commit on main"
+        value: ${{ jobs.release.outputs.release_commit_sha }}
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+
+    outputs:
+      version: ${{ steps.next.outputs.version }}
+      release_commit_sha: ${{ steps.push.outputs.commit }}
+
+    env:
+      VERSION_FILE: ${{ inputs.version_file }}
+      VERSION_PATTERN: ${{ inputs.version_pattern }}
+
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.bot_app_id }}
+          private-key: ${{ secrets.bot_private_key }}
+
+      - uses: actions/checkout@v6
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          ref: main
+          fetch-depth: 0
+
+      - name: Record the tested commit
+        id: tested
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for main's Build to pass
+        uses: alexdlaird/shipshape/wait-for-ci@v1
+        with:
+          token: ${{ github.token }}
+          sha: ${{ steps.tested.outputs.sha }}
+          branch: main
+          repo-slug: ${{ github.repository }}
+          workflow: build.yml
+          timeout-minutes: 30
+
+      - name: Read the current version
+        id: current
+        uses: alexdlaird/shipshape/read-version@v1
+        with:
+          version-file: ${{ inputs.version_file }}
+          version-pattern: ${{ inputs.version_pattern }}
+
+      - name: Compute the release version
+        id: next
+        uses: alexdlaird/shipshape/next-version@v1
+        with:
+          bump-type: ${{ inputs.bump_type }}
+          current: ${{ steps.current.outputs.version }}
+          current-file-version: ${{ steps.current.outputs.file-version }}
+
+      - name: Pre-validate the version is unreleased
+        uses: alexdlaird/shipshape/check-unreleased@v1
+        with:
+          version: ${{ steps.next.outputs.version }}
+
+      - name: Date the CHANGELOG's entries under the version
+        id: notes
+        uses: alexdlaird/shipshape/prepare-release@v1
+        with:
+          version: ${{ steps.next.outputs.version }}
+          repo-slug: ${{ github.repository }}
+
+      - name: Write the version
+        env:
+          VERSION: ${{ steps.next.outputs.version }}
+        run: |
+          PATTERN="${VERSION_PATTERN//\$\{VERSION\}/${VERSION}}"
+          sed -i "${PATTERN}" "${VERSION_FILE}"
+          grep -F "${VERSION}" "${VERSION_FILE}" >/dev/null \
+            || { echo "::error::Writing ${VERSION} to ${VERSION_FILE} failed"; exit 1; }
+
+      - name: Write the version to the repo's other files
+        env:
+          VERSION: ${{ steps.next.outputs.version }}
+        run: |
+          if make -n release-version VERSION="${VERSION}" >/dev/null 2>&1; then
+            make release-version VERSION="${VERSION}"
+          fi
+
+      - name: Point SECURITY.md at the version
+        uses: alexdlaird/shipshape/security-versions@v1
+        with:
+          version: ${{ steps.next.outputs.version }}
+
+      - name: Validate the release
+        env:
+          VERSION: ${{ steps.next.outputs.version }}
+        run: |
+          if make -n validate-release VERSION="${VERSION}" >/dev/null 2>&1; then
+            make validate-release VERSION="${VERSION}"
+          fi
+
+      - name: List the files the release may change
+        env:
+          RELEASE_FILES: ${{ inputs.release_files }}
+        run: |
+          {
+            echo "${VERSION_FILE}"
+            echo "CHANGELOG.md"
+            echo "SECURITY.md"
+            printf '%s\n' "${RELEASE_FILES}" | sed '/^[[:space:]]*$/d'
+          } > "${RUNNER_TEMP}/release-files"
+
+      - name: Verify the release changes only its version files
+        run: |
+          CHANGED=$(git status --porcelain --untracked-files=all | cut -c4-)
+          UNEXPECTED=$(grep -vxF -f "${RUNNER_TEMP}/release-files" <<< "$CHANGED" || true)
+          if [ -n "$UNEXPECTED" ]; then
+            echo "::error::The release changed more than its version files: ${UNEXPECTED//$'\n'/, }"
+            exit 1
+          fi
+          git diff
+
+      - name: Commit the release to main (signed)
+        id: push
+        uses: IAreKyleW00t/verified-bot-commit@v2.3.5
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          repository: ${{ github.repository }}
+          ref: main
+          files: '**'
+          if-no-commit: error
+          message: |
+            Release ${{ steps.next.outputs.version }}
+
+            ${{ steps.notes.outputs.release-notes }}
+
+      - name: Verify the release commit is the tested commit plus its version files
+        env:
+          COMMIT: ${{ steps.push.outputs.commit }}
+          TESTED_SHA: ${{ steps.tested.outputs.sha }}
+        run: |
+          git fetch -q origin main
+          PARENT=$(git rev-parse "${COMMIT}^")
+          if [ "$PARENT" != "$TESTED_SHA" ]; then
+            echo "::error::main moved during release: ${COMMIT:0:7} landed on ${PARENT:0:7}, not the tested ${TESTED_SHA:0:7}. Revert it, then re-run."
+            exit 1
+          fi
+          UNEXPECTED=$(git diff --name-only "$TESTED_SHA" "$COMMIT" | grep -vxF -f "${RUNNER_TEMP}/release-files" || true)
+          if [ -n "$UNEXPECTED" ]; then
+            echo "::error::${COMMIT:0:7} changed more than its version files: ${UNEXPECTED//$'\n'/, }. Revert it, then re-run."
+            exit 1
+          fi
+
+      # The App token's tag starts tag-triggered workflows; github.token's wouldn't
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          VERSION: ${{ steps.next.outputs.version }}
+          SHA: ${{ steps.push.outputs.commit }}
+          RELEASE_NOTES: ${{ steps.notes.outputs.release-notes }}
+        run: |
+          gh release create "$VERSION" \
+            --target "$SHA" \
+            --title "$VERSION" \
+            --notes "$RELEASE_NOTES"
+
+      - name: Move the major version tag
+        if: inputs.move_major_tag
+        env:
+          VERSION: ${{ steps.next.outputs.version }}
+          SHA: ${{ steps.push.outputs.commit }}
+        run: |
+          MAJOR_TAG="v${VERSION%%.*}"
+          git tag -f "$MAJOR_TAG" "$SHA"
+          git push -f origin "refs/tags/${MAJOR_TAG}"
+          echo "${MAJOR_TAG} -> ${SHA:0:7}"
+
+      - name: Add release to job summary
+        env:
+          VERSION: ${{ steps.next.outputs.version }}
+          SHA: ${{ steps.push.outputs.commit }}
+          REPO_SLUG: ${{ github.repository }}
+        run: |
+          {
+            echo "## Release \`${VERSION}\`"
+            echo ""
+            echo "Release commit: [\`${SHA:0:7}\`](https://github.com/${REPO_SLUG}/commit/${SHA})"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -2,6 +2,12 @@ name: "CodeQL"
 
 on:
   workflow_call:
+    inputs:
+      languages:
+        description: "Comma-separated CodeQL languages to analyse; detected from the repo when blank. Name them when the repo has languages that need a build (Swift, Kotlin), since this analyses without building."
+        required: false
+        type: string
+        default: ''
 
 permissions:
   security-events: write
@@ -24,6 +30,7 @@ jobs:
         uses: github/codeql-action/init@v4
         with:
           build-mode: none
+          languages: ${{ inputs.languages }}
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4

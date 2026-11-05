@@ -26,6 +26,11 @@ on:
         required: false
         type: string
         default: build.yml
+      ci_dispatch_inputs:
+        description: "Inputs for a fresh run of ci_workflow when the tested commit has no push run, one name=value per line"
+        required: false
+        type: string
+        default: ''
       repo_slug:
         description: "owner/repo"
         required: true
@@ -54,6 +59,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: release-${{ github.repository }}
@@ -173,16 +179,26 @@ jobs:
         id: wait-for-build
         uses: alexdlaird/shipshape/wait-for-ci@v1
         with:
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ github.token }}
           sha: ${{ steps.boundary.outputs.sha }}
           repo-slug: ${{ inputs.repo_slug }}
           workflow: ${{ inputs.ci_workflow }}
+          dispatch-inputs: ${{ inputs.ci_dispatch_inputs }}
+
+      # Fresh, since the wait can outlast the first App token's hour
+      - name: Generate GitHub App token for the commit
+        id: commit-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ secrets.bot_app_id }}
+          private-key: ${{ secrets.bot_private_key }}
+          skip-token-revoke: true
 
       - name: Commit squash to main (signed, keeping file modes)
         id: push
         uses: IAreKyleW00t/verified-bot-commit@v2.3.5
         with:
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ steps.commit-token.outputs.token }}
           repository: ${{ inputs.repo_slug }}
           ref: main
           files: '**'

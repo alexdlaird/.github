@@ -122,12 +122,8 @@ jobs:
             exit 0
           fi
 
-          # Register a local merge driver that always takes main's version of
-          # CHANGELOG.md. Without this, git's ort strategy auto-merges it
-          # "successfully" but incorrectly: develop still has [Unreleased] entries
-          # (unchanged from the merge base), and main moved them to a new versioned
-          # section, so ort keeps both — silently producing duplicates. This driver
-          # runs before the merge and bypasses auto-merge entirely for that file.
+          # Takes main's CHANGELOG.md: ort would keep both develop's [Unreleased] entries and main's dated section of
+          # them, silently duplicating them
           echo "CHANGELOG.md merge=take-theirs" >> .git/info/attributes
           git config merge.take-theirs.driver 'cp -f "%B" "%A"'
 
@@ -137,14 +133,12 @@ jobs:
             exit 0
           fi
 
-          # Remaining conflict path (non-CHANGELOG files) — open a PR.
           git merge --abort || true
 
           MAIN_SHA=$(git rev-parse origin/main)
           SHORT_SHA="${MAIN_SHA:0:7}"
           BRANCH="cleanup/merge-main-${SHORT_SHA}"
 
-          # Snapshot main's tip onto a stable cleanup branch as the PR head.
           git push --force-with-lease origin "${MAIN_SHA}:refs/heads/${BRANCH}"
 
           EXISTING=$(gh pr list --repo "${REPO}" --head "${BRANCH}" --base develop \
