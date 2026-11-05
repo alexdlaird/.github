@@ -1,12 +1,17 @@
 name: Auto-Merge Dependabot PRs
 
-# Approves and auto-merges Dependabot's PRs, and with `renovate_label` the PRs Renovate labels so (a repo that runs
-# Renovate instead). A caller that has to update lockfiles first runs that as a job this one needs.
+# Approves and auto-merges Dependabot's PRs, and with `renovate_label` the PRs `renovate_author` opened and labeled so
+# (a repo that runs Renovate instead). A caller that has to update lockfiles first runs that as a job this one needs.
 on:
   workflow_call:
     inputs:
       renovate_label:
         description: "Also auto-merge PRs carrying this label (the one Renovate adds); blank for Dependabot only"
+        required: false
+        type: string
+        default: ''
+      renovate_author:
+        description: "The login Renovate opens PRs as (e.g. my-bot[bot]); labeled PRs by anyone else aren't merged"
         required: false
         type: string
         default: ''
@@ -24,7 +29,8 @@ jobs:
 
     if: >-
       github.actor == 'dependabot[bot]' ||
-      (inputs.renovate_label != '' && contains(github.event.pull_request.labels.*.name, inputs.renovate_label))
+      (inputs.renovate_label != '' && github.event.pull_request.user.login == inputs.renovate_author &&
+      contains(github.event.pull_request.labels.*.name, inputs.renovate_label))
     steps:
       - name: Get Dependabot metadata
         if: github.actor == 'dependabot[bot]'
