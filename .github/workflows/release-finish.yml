@@ -1,7 +1,8 @@
 name: Release Finish (Tag, sync develop, bump)
 
-# The end of a release once its deploys ran: tag the squash commit (when everything shipped), merge main back into
-# develop either way, then bump develop to the next version (after a tag).
+# The end of a release once its deploys ran: tag the squash commit (when everything shipped), optionally publish a
+# GitHub release on the tag, merge main back into develop either way, then bump develop to the next version (after a
+# tag).
 on:
   workflow_call:
     inputs:
@@ -47,6 +48,21 @@ on:
         description: "owner/repo"
         required: true
         type: string
+      github_release:
+        description: "Publish a GitHub release on the tag (needs the caller to grant actions: read)"
+        required: false
+        type: boolean
+        default: false
+      github_release_artifact:
+        description: "Artifact of the build run whose files the GitHub release attaches, each named <name>-<version>.<ext>"
+        required: false
+        type: string
+        default: ''
+      github_release_notes:
+        description: "The GitHub release's notes; GitHub generates them when blank"
+        required: false
+        type: string
+        default: ''
     secrets:
       bot_app_id:
         required: true
@@ -84,6 +100,41 @@ jobs:
             echo "- **Version**: \`${VERSION}\`"
             echo "- **Commit**: \`${COMMIT_SHA}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  github-release:
+    needs: [tag]
+    if: inputs.github_release && needs.tag.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Download the release's assets
+        if: inputs.github_release_artifact != ''
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ inputs.github_release_artifact }}
+          path: release-assets
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          REPO: ${{ inputs.repo_slug }}
+          NOTES: ${{ inputs.github_release_notes }}
+        run: |
+          shopt -s nullglob
+          for file in release-assets/*; do
+            name=$(basename "$file")
+            mv "$file" "release-assets/${name%.*}-${VERSION}.${name##*.}"
+          done
+          assets=(release-assets/*)
+          notes=(--generate-notes)
+          if [ -n "$NOTES" ]; then notes=(--notes "$NOTES"); fi
+          gh release create "$VERSION" "${assets[@]}" --repo "$REPO" --verify-tag --title "$VERSION" "${notes[@]}"
 
   cleanup:
     needs: [tag]

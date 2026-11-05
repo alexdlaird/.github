@@ -1,9 +1,12 @@
 name: Store Submit (Submit a release's candidates for review)
 
 # Submits the builds CI uploaded for a released commit: the TestFlight build for App Store review and the Internal-track
-# version code for Play Production review, by the numbers in that CI run's `ios-build` / `android-build` artifacts.
-# The app supplies the fastlane lanes `submit_appstore` (version:, build_number:, push_store_assets:) and
-# `submit_production` (version:, version_code:, push_store_assets:; re-staging from Play's library if Internal moved on).
+# version code for Play Production review, by the numbers in that CI run's `ios-build` / `android-build` artifacts. With
+# `submit_for_review: false` it stages them instead (the App Store version with its build attached, a Play Production
+# draft), to be sent for review from the consoles.
+# The app supplies the fastlane lanes `submit_appstore` (version:, build_number:, push_store_assets:, submit_for_review:)
+# and `submit_production` (version:, version_code:, push_store_assets:, submit_for_review:; re-staging from Play's
+# library if Internal moved on).
 on:
   workflow_call:
     inputs:
@@ -28,6 +31,21 @@ on:
         required: false
         type: boolean
         default: false
+      submit_for_review:
+        description: "Send the builds for review; false stages them for sending from the consoles"
+        required: false
+        type: boolean
+        default: true
+      ios_console_url:
+        description: "App Store Connect link for the run summary"
+        required: false
+        type: string
+        default: ''
+      android_console_url:
+        description: "Play Console link for the run summary"
+        required: false
+        type: string
+        default: ''
       ios:
         description: "Submit to the App Store"
         required: false
@@ -71,6 +89,12 @@ on:
       app_store_connect_api_key:
         required: false
       app_review_phone:
+        required: false
+      apple_id:
+        description: "APPLE_ID for an Appfile that reads it"
+        required: false
+      app_store_connect_team_id:
+        description: "APP_STORE_CONNECT_TEAM_ID for an Appfile that reads it"
         required: false
       google_play_service_account_key:
         required: false
@@ -127,23 +151,46 @@ jobs:
       - name: Install Fastlane
         run: cd ios && bundle install
 
-      - name: Submit for App Store review
+      - name: ${{ inputs.submit_for_review && 'Submit for App Store review' || 'Stage App Store version' }}
         env:
           APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.app_store_connect_api_key_id }}
           APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.app_store_connect_api_issuer_id }}
           APP_STORE_CONNECT_API_KEY: ${{ secrets.app_store_connect_api_key }}
+          APPLE_ID: ${{ secrets.apple_id }}
+          APP_STORE_CONNECT_TEAM_ID: ${{ secrets.app_store_connect_team_id }}
           APP_REVIEW_FIRST_NAME: ${{ inputs.app_review_first_name }}
           APP_REVIEW_LAST_NAME: ${{ inputs.app_review_last_name }}
           APP_REVIEW_EMAIL: ${{ inputs.app_review_email }}
           APP_REVIEW_PHONE: ${{ secrets.app_review_phone }}
           VERSION: ${{ inputs.version }}
           PUSH_STORE_ASSETS: ${{ inputs.push_store_assets }}
+          SUBMIT_FOR_REVIEW: ${{ inputs.submit_for_review }}
         run: |
           mkdir -p ~/.appstoreconnect/private_keys
           echo "$APP_STORE_CONNECT_API_KEY" > ~/.appstoreconnect/private_keys/AuthKey_"${APP_STORE_CONNECT_API_KEY_ID}".p8
           BUILD_NUMBER=$(cat build/release-candidate/build_number.txt)
           cd ios && bundle exec fastlane submit_appstore \
-            version:"$VERSION" build_number:"$BUILD_NUMBER" push_store_assets:"$PUSH_STORE_ASSETS"
+            version:"$VERSION" build_number:"$BUILD_NUMBER" push_store_assets:"$PUSH_STORE_ASSETS" \
+            submit_for_review:"$SUBMIT_FOR_REVIEW"
+
+      - name: Summary
+        env:
+          VERSION: ${{ inputs.version }}
+          SUBMIT_FOR_REVIEW: ${{ inputs.submit_for_review }}
+          CONSOLE_URL: ${{ inputs.ios_console_url }}
+        run: |
+          if [ "$SUBMIT_FOR_REVIEW" = "true" ]; then
+            STATUS="Submitted for review."
+          else
+            STATUS="Staged. Click **Submit for Review** in App Store Connect when ready."
+          fi
+          {
+            echo "### App Store"
+            echo ""
+            echo "- **Version**: ${VERSION}+$(cat build/release-candidate/build_number.txt)"
+            echo "- **Status**: ${STATUS}"
+            if [ -n "$CONSOLE_URL" ]; then echo "- **Console**: [App Store Connect](${CONSOLE_URL})"; fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Cleanup
         if: always()
@@ -192,14 +239,36 @@ jobs:
           GOOGLE_PLAY_SERVICE_ACCOUNT_KEY: ${{ secrets.google_play_service_account_key }}
         run: echo "$GOOGLE_PLAY_SERVICE_ACCOUNT_KEY" > android/service-account-key.json
 
-      - name: Submit for Production review
+      - name: ${{ inputs.submit_for_review && 'Submit for Production review' || 'Stage Production draft' }}
         env:
           VERSION: ${{ inputs.version }}
           PUSH_STORE_ASSETS: ${{ inputs.push_store_assets }}
+          SUBMIT_FOR_REVIEW: ${{ inputs.submit_for_review }}
         run: |
           VERSION_CODE=$(cat build/release-candidate/version_code.txt)
           cd android && bundle exec fastlane submit_production \
-            version:"$VERSION" version_code:"$VERSION_CODE" push_store_assets:"$PUSH_STORE_ASSETS"
+            version:"$VERSION" version_code:"$VERSION_CODE" push_store_assets:"$PUSH_STORE_ASSETS" \
+            submit_for_review:"$SUBMIT_FOR_REVIEW"
+
+      - name: Summary
+        env:
+          VERSION: ${{ inputs.version }}
+          SUBMIT_FOR_REVIEW: ${{ inputs.submit_for_review }}
+          CONSOLE_URL: ${{ inputs.android_console_url }}
+        run: |
+          if [ "$SUBMIT_FOR_REVIEW" = "true" ]; then
+            STATUS="Submitted for review."
+          else
+            STATUS="Staged as a draft. Click **Send for review** in Play Console when ready."
+          fi
+          {
+            echo "### Google Play"
+            echo ""
+            echo "- **Version**: ${VERSION}+$(cat build/release-candidate/version_code.txt)"
+            echo "- **Track**: Production"
+            echo "- **Status**: ${STATUS}"
+            if [ -n "$CONSOLE_URL" ]; then echo "- **Console**: [Google Play Console](${CONSOLE_URL})"; fi
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Cleanup
         if: always()
