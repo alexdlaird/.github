@@ -212,8 +212,11 @@ jobs:
       - name: Ensure tool cache directory is writable
         if: runner.environment == 'self-hosted'
         run: |
-          sudo mkdir -p /Users/runner/hostedtoolcache
-          sudo chown "$USER":staff /Users/runner/hostedtoolcache
+          # A CI user shares a group-writable cache (dev-init-mac-runner); only an owner-run runner needs sudo.
+          if [ ! -w /Users/runner/hostedtoolcache ]; then
+            sudo mkdir -p /Users/runner/hostedtoolcache
+            sudo chown "$USER":staff /Users/runner/hostedtoolcache
+          fi
 
       - name: Setup Ruby
         uses: ruby/setup-ruby@v1
