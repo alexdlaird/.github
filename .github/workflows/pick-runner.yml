@@ -3,8 +3,9 @@ name: Pick Runner (GitHub Linux, or the self-hosted Mac when Linux minutes run o
 # Decides, on the self-hosted Mac, whether a run's Linux-capable jobs go to GitHub's Linux or to the Mac. GitHub refuses
 # to start a Linux job once a private repo's minutes run out (or a payment fails), and a refused job can't react, so the
 # answer comes from the repo's own history: the most recent GitHub-hosted job this calendar month (when included minutes
-# reset) is the evidence. Refused for billing: the Mac. Ran: Linux. None yet this month: Linux. One run is refused before
-# the switch, and a run that ran on Linux afterwards (minutes added) switches back. Needs no key beyond the run's token;
+# reset) is the evidence, earlier attempts of this run included. Refused for billing: the Mac. Ran: Linux. None yet this
+# month: Linux. One run is refused before the switch (re-run all its jobs, not only the failed ones, so this looks
+# again), and a run that ran on Linux afterwards (minutes added) switches back. Needs no key beyond the run's token;
 # the caller grants it `actions: read` (runs and jobs) and `checks: read` (a refused job's annotation).
 on:
   workflow_call:
@@ -49,7 +50,6 @@ jobs:
 
           API = os.environ["GITHUB_API_URL"]
           REPO = os.environ["GITHUB_REPOSITORY"]
-          THIS_RUN = int(os.environ["GITHUB_RUN_ID"])
           REFUSED_FOR_BILLING = "The job was not started because"
           RUNS_TO_READ = 50
 
@@ -84,9 +84,7 @@ jobs:
                   "/repos/{}/actions/runs?per_page={}&created=%3E%3D{}".format(REPO, RUNS_TO_READ, month_start)
               )["workflow_runs"]
               for run in runs:
-                  if run["id"] == THIS_RUN:
-                      continue
-                  jobs = get("/repos/{}/actions/runs/{}/jobs?per_page=100".format(REPO, run["id"]))["jobs"]
+                  jobs = get("/repos/{}/actions/runs/{}/jobs?filter=all&per_page=100".format(REPO, run["id"]))["jobs"]
                   hosted = sorted(filter(is_github_hosted, jobs), key=lambda job: job["completed_at"], reverse=True)
                   for job in hosted:
                       if job.get("runner_name") or was_refused_for_billing(job):
