@@ -1,0 +1,118 @@
+name: Pick Runner (GitHub Linux, or the self-hosted Mac when Linux minutes run out)
+
+# Decides, on the self-hosted Mac, whether a run's Linux-capable jobs go to GitHub's Linux or to the Mac. GitHub refuses
+# to start a Linux job once a private repo's minutes run out (or a payment fails), and a refused job can't react, so the
+# answer comes from the repo's own history: the most recent GitHub-hosted job this calendar month (when included minutes
+# reset) is the evidence. Refused for billing: the Mac. Ran: Linux. None yet this month: Linux. One run is refused before
+# the switch, and a run that ran on Linux afterwards (minutes added) switches back. Needs no key beyond the run's token;
+# the caller grants it `actions: read` (runs and jobs) and `checks: read` (a refused job's annotation).
+on:
+  workflow_call:
+    inputs:
+      force_self_hosted:
+        description: "Send the jobs to the Mac whatever the history says (a manual override)"
+        required: false
+        type: boolean
+        default: false
+      runs_on:
+        description: "JSON runner labels the picker itself runs on (the Mac the jobs fall back to)"
+        required: false
+        type: string
+        default: '["self-hosted", "macos", "arm64"]'
+    outputs:
+      self_hosted:
+        description: "'true' when the jobs should run on the self-hosted Mac, 'false' for GitHub's Linux"
+        value: ${{ jobs.pick.outputs.self_hosted }}
+
+permissions:
+  actions: read
+  checks: read
+
+jobs:
+  pick:
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
+    timeout-minutes: 5
+    outputs:
+      self_hosted: ${{ steps.pick.outputs.self_hosted }}
+    steps:
+      - name: Pick the runner
+        id: pick
+        shell: /usr/bin/python3 {0}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE_SELF_HOSTED: ${{ inputs.force_self_hosted }}
+        run: |
+          import datetime
+          import json
+          import os
+          import urllib.request
+
+          API = os.environ["GITHUB_API_URL"]
+          REPO = os.environ["GITHUB_REPOSITORY"]
+          THIS_RUN = int(os.environ["GITHUB_RUN_ID"])
+          REFUSED_FOR_BILLING = "The job was not started because"
+          RUNS_TO_READ = 50
+
+
+          def get(path):
+              request = urllib.request.Request(
+                  API + path,
+                  headers={
+                      "Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                      "Accept": "application/vnd.github+json",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  return json.load(response)
+
+
+          def is_github_hosted(job):
+              return job["status"] == "completed" and job["labels"] and "self-hosted" not in job["labels"]
+
+
+          def was_refused_for_billing(job):
+              if job["conclusion"] != "failure" or job.get("runner_name"):
+                  return False
+              annotations = get("/repos/{}/check-runs/{}/annotations".format(REPO, job["id"]))
+              return any(REFUSED_FOR_BILLING in annotation["message"] for annotation in annotations)
+
+
+          def latest_github_hosted_job():
+              month_start = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-01")
+              runs = get(
+                  "/repos/{}/actions/runs?per_page={}&created=%3E%3D{}".format(REPO, RUNS_TO_READ, month_start)
+              )["workflow_runs"]
+              for run in runs:
+                  if run["id"] == THIS_RUN:
+                      continue
+                  jobs = get("/repos/{}/actions/runs/{}/jobs?per_page=100".format(REPO, run["id"]))["jobs"]
+                  hosted = sorted(filter(is_github_hosted, jobs), key=lambda job: job["completed_at"], reverse=True)
+                  for job in hosted:
+                      if job.get("runner_name") or was_refused_for_billing(job):
+                          return job, run
+              return None, None
+
+
+          def pick():
+              if os.environ["FORCE_SELF_HOSTED"] == "true":
+                  return True, "the manual override (use_self_hosted or USE_SELF_HOSTED) is on"
+              try:
+                  job, run = latest_github_hosted_job()
+              except Exception as error:
+                  return True, "the run history couldn't be read ({}), so the Mac, which is up".format(error)
+              if job is None:
+                  return False, "no GitHub-hosted job yet this month"
+              where = "{} in {} ({})".format(job["name"], run["name"], run["html_url"])
+              if job.get("runner_name"):
+                  return False, "the latest GitHub-hosted job ran: " + where
+              return True, "the latest GitHub-hosted job was refused for billing: " + where
+
+
+          self_hosted, reason = pick()
+          runner = "the self-hosted Mac" if self_hosted else "GitHub Linux"
+          print("::notice title=Runner::{}, because {}".format(runner, reason))
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write("self_hosted={}\n".format("true" if self_hosted else "false"))
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              summary.write("### Runner: {}\n\nBecause {}.\n".format(runner, reason))
