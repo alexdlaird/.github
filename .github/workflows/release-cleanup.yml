@@ -18,6 +18,11 @@ on:
         required: false
         type: boolean
         default: false
+      runs_on:
+        description: "JSON runner labels for the job: GitHub's Linux, or a self-hosted runner when its minutes run out"
+        required: false
+        type: string
+        default: '"ubuntu-latest"'
     secrets:
       bot_app_id:
         required: true
@@ -30,7 +35,7 @@ permissions:
 jobs:
   cleanup:
     name: Sync develop with main
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
 
     steps:
       - name: Generate GitHub App token
@@ -40,6 +45,14 @@ jobs:
           client-id: ${{ secrets.bot_app_id }}
           private-key: ${{ secrets.bot_private_key }}
           skip-token-revoke: true
+
+      # A self-hosted runner's own git settings (identity, signing, hooks, credential helpers) stay out of the bot's
+      # commits and tags
+      - name: Isolate git config
+        run: |
+          : > "$RUNNER_TEMP/bot.gitconfig"
+          echo "GIT_CONFIG_GLOBAL=$RUNNER_TEMP/bot.gitconfig" >> "$GITHUB_ENV"
+          echo "GIT_CONFIG_NOSYSTEM=1" >> "$GITHUB_ENV"
 
       - uses: actions/checkout@v6
         with:

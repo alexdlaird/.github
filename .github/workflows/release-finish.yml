@@ -68,6 +68,11 @@ on:
         required: false
         type: string
         default: ''
+      runs_on:
+        description: "JSON runner labels for the job: GitHub's Linux, or a self-hosted runner when its minutes run out"
+        required: false
+        type: string
+        default: '"ubuntu-latest"'
     secrets:
       bot_app_id:
         required: true
@@ -78,11 +83,10 @@ permissions:
   contents: write
 
 jobs:
-  # Tags as the repo's release bot, on GitHub's Linux runners, never a self-hosted Mac, whose runner uses its owner's
-  # git config.
+  # Tags as the repo's release bot, with the runner's own git config kept out.
   tag:
     if: inputs.shipped
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     timeout-minutes: 5
     steps:
       - name: Generate GitHub App token
@@ -92,6 +96,14 @@ jobs:
           client-id: ${{ secrets.bot_app_id }}
           private-key: ${{ secrets.bot_private_key }}
           skip-token-revoke: true
+
+      # A self-hosted runner's own git settings (identity, signing, hooks, credential helpers) stay out of the bot's
+      # commits and tags
+      - name: Isolate git config
+        run: |
+          : > "$RUNNER_TEMP/bot.gitconfig"
+          echo "GIT_CONFIG_GLOBAL=$RUNNER_TEMP/bot.gitconfig" >> "$GITHUB_ENV"
+          echo "GIT_CONFIG_NOSYSTEM=1" >> "$GITHUB_ENV"
 
       - uses: actions/checkout@v6
         with:
@@ -129,7 +141,7 @@ jobs:
   github-release:
     needs: [tag]
     if: inputs.github_release && needs.tag.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     timeout-minutes: 10
     permissions:
       contents: write
@@ -184,6 +196,7 @@ jobs:
       consolidate_history: ${{ inputs.consolidate_history && needs.tag.result == 'success' }}
       squash_boundary_sha: ${{ inputs.squash_boundary_sha }}
       skip_ci: ${{ needs.tag.result == 'success' }}
+      runs_on: ${{ inputs.runs_on }}
     secrets:
       bot_app_id: ${{ secrets.bot_app_id }}
       bot_private_key: ${{ secrets.bot_private_key }}
@@ -198,6 +211,7 @@ jobs:
       version_pattern: ${{ inputs.version_pattern }}
       version_parts: ${{ inputs.version_parts }}
       repo_slug: ${{ inputs.repo_slug }}
+      runs_on: ${{ inputs.runs_on }}
     secrets:
       bot_app_id: ${{ secrets.bot_app_id }}
       bot_private_key: ${{ secrets.bot_private_key }}

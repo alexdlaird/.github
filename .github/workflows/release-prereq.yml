@@ -35,6 +35,11 @@ on:
         description: "owner/repo"
         required: true
         type: string
+      runs_on:
+        description: "JSON runner labels for the job: GitHub's Linux, or a self-hosted runner when its minutes run out. Never the runner ci_workflow builds on: the job waits for that run"
+        required: false
+        type: string
+        default: '"ubuntu-latest"'
     secrets:
       bot_app_id:
         required: true
@@ -67,7 +72,7 @@ concurrency:
 jobs:
   prereq:
     name: Squash develop into main
-    runs-on: ubuntu-latest
+    runs-on: ${{ fromJSON(inputs.runs_on) }}
     outputs:
       version: ${{ steps.read-version.outputs.version }}
       squash_commit_sha: ${{ steps.push.outputs.commit }}
@@ -83,6 +88,14 @@ jobs:
           client-id: ${{ secrets.bot_app_id }}
           private-key: ${{ secrets.bot_private_key }}
           skip-token-revoke: true
+
+      # A self-hosted runner's own git settings (identity, signing, hooks, credential helpers) stay out of the bot's
+      # commits and tags
+      - name: Isolate git config
+        run: |
+          : > "$RUNNER_TEMP/bot.gitconfig"
+          echo "GIT_CONFIG_GLOBAL=$RUNNER_TEMP/bot.gitconfig" >> "$GITHUB_ENV"
+          echo "GIT_CONFIG_NOSYSTEM=1" >> "$GITHUB_ENV"
 
       - uses: actions/checkout@v6
         with:
