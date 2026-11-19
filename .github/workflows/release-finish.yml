@@ -160,7 +160,7 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: ${{ inputs.github_release_artifact }}
-          path: release-assets
+          path: ${{ runner.temp }}/release-assets
           run-id: ${{ inputs.build_run_id }}
           github-token: ${{ github.token }}
 
@@ -169,7 +169,7 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: ${{ inputs.github_release_run_artifact }}
-          path: release-run-assets
+          path: ${{ runner.temp }}/release-run-assets
 
       - name: Publish the GitHub release
         env:
@@ -177,8 +177,11 @@ jobs:
           VERSION: ${{ inputs.version }}
           REPO: ${{ inputs.repo_slug }}
           NOTES: ${{ inputs.github_release_notes }}
+        # Downloaded under the job's temp folder, which the runner empties every job, so a self-hosted runner's leftovers
+        # from an earlier release never get attached
         run: |
           shopt -s nullglob
+          cd "$RUNNER_TEMP"
           for file in release-assets/*; do
             name=$(basename "$file")
             mv "$file" "release-assets/${name%.*}-${VERSION}.${name##*.}"
